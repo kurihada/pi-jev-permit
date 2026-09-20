@@ -8,7 +8,7 @@ Two earlier consumers, `jev_evaluate` and `ask_advisor`, were removed. They were
 
 ## First run
 
-1. **Install and restart.** `pi install /path/to/pi-jev-permit`, then quit and relaunch pi — extensions load at startup and the command list is fixed for the session.
+1. **Install and restart.** `pi install npm:pi-jev-permit` — or `pi install /path/to/pi-jev-permit` when you are working on the source — then quit and relaunch pi: extensions load at startup and the command list is fixed for the session.
 2. **Get a key.** The official route is the TypeSafe console: `console.typesafe.ai` → **API Keys**.
 3. **Only if you bill a gateway or a router**, point the package at it *before* logging in, in `~/.pi/agent/pi-jev-permit.json`:
 
