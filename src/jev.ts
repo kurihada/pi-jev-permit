@@ -343,6 +343,34 @@ export function appendLog(agentDir: string, record: LogRecord): void {
   }
 }
 
+// ---------------------------------------------------------------- 读回日志
+
+/**
+ * 读回日志（**容忍坏行**：文件可能被旧版本写过、也可能被手工改过）。
+ * `limit` 取的是**尾部**条数，最近的排在最后。返回原始 JSON 对象而不做类型断言 ——
+ * 读的一方自己用 typeof 逐个字段确认。
+ */
+export function readLogRecords(agentDir: string, limit = 5000): JevJsonObject[] {
+  let text: string;
+  try {
+    text = readFileSync(logPath(agentDir), "utf8");
+  } catch {
+    return [];
+  }
+
+  const lines = text.split("\n").filter((line) => line.trim().length > 0);
+  const out: JevJsonObject[] = [];
+  for (const line of lines.slice(-Math.max(0, limit))) {
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (isJsonRecord(parsed)) out.push(parsed);
+    } catch {
+      /* 坏行跳过 */
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- 客户端
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;

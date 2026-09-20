@@ -277,6 +277,16 @@ pi-jev-suite/
 
 **改配置需要 `/jev-suite reload` 才生效** —— 防止 prompt injection 悄悄放宽自己的权限。改动时状态栏提示"配置已变，待 reload"。
 
+### 实现与本节 schema 的差异（M1–M4 落地后回填）
+
+- **删掉 `scope`**：它依赖上游那套 `flagged` + 33 条危险 pattern 的机制；本方案把规则移进了配置、判定对象改成了段，保留它只能做成一个 fail-open 开关（"认不出来就放行"），而你要的是"白名单直过、其余问 AI"，那正是默认行为。
+- **删掉 `hardDeny` / `readOnly` / `selfConfigWritable`**：硬拦与只读表**内建在代码里**，配置只能追加不能取消；本包自己的配置与日志永远可写（没有开关 —— 一个"能把自己锁在外面"的开关没有安全收益，改配置本来就需要 reload）。
+- **删掉 `extraHardDeny`**，保留 `extraReadOnly`。
+- **删掉 `extraProtectedPaths`**：与 `protectedPaths` 语义重复。`protectedPaths` 是**附加**在内建保护表之上（内建表在 `src/policy.ts`）。
+- 实际生效的 gate 字段：`provider` / `records` / `allow` / `deny` / `extraReadOnly` / `transparentWrappers` / `protectedPaths`。
+- `records` 默认 `status`：每次判定只更新状态栏一行，写 transcript 卡片要显式设 `full`。
+- key 槽位按协议分开（`pi-jev-suite-<protocol>-api-key`），环境变量只覆盖当前协议，**不复用** `TYPESAFE_API_KEY`。
+
 ---
 
 ## 5. 失败与降级（痛点 4）

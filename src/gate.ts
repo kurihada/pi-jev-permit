@@ -489,6 +489,7 @@ export interface ToolCallEventLike {
 export interface GateUiLike {
   setStatus?(key: string, text: string | undefined): void;
   notify?(message: string, level?: string): void;
+  input?(title: string, placeholder?: string): Promise<string | undefined>;
 }
 
 export interface GateContextLike {
@@ -507,8 +508,8 @@ export interface ExtensionApiLike {
 }
 
 export interface GateWiring {
-  /** 每次判定都重新取配置 —— `/jev-suite reload` 只要换掉它读的地方即可 */
-  readonly loadConfig: () => SuiteConfig;
+  /** 每次判定都重新取配置（含项目层）—— `/jev-suite reload` 只是把 warning 报出来 */
+  readonly loadConfig: (ctx: { readonly cwd: string; readonly trusted: boolean }) => SuiteConfig;
   /** 按配置构造 client；没有 key 时返回 null */
   readonly makeClient: (config: SuiteConfig) => JevClient | null;
   readonly breaker: Breaker;
@@ -532,7 +533,7 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
   const now = wiring.now ?? (() => Date.now());
 
   pi.on("tool_call", async (event, ctx) => {
-    const config = wiring.loadConfig();
+    const config = wiring.loadConfig({ cwd: ctx.cwd, trusted: ctx.isProjectTrusted?.() ?? false });
     if (!config.enabled) return undefined;
 
     const deps: GateDeps = {
