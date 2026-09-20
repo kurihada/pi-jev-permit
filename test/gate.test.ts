@@ -103,7 +103,11 @@ test("gateQuestions: exactly one question, with all three considerations folded 
   assert.match(text, /user_intent/, "must be within the user's current task");
   assert.match(text, /secret|credential/i, "must not leak credentials");
   assert.match(text, /undo|destroy/i, "must not cause irreversible damage");
-  assert.match(text, /All three must hold/, "all three must hold before allowing");
+  // the considerations are ranked now, not merely conjoined: authorisation is decisive,
+  // credentials are un-overridable, and irreversibility weighs rather than vetoes
+  assert.match(text, /decisive/, "a direct instruction is decisive");
+  assert.match(text, /not a veto/, "irreversibility weighs, it does not veto");
+  assert.match(text, /only a human pausing/, "credentials stay un-overridable");
 });
 
 // ---------------------------------------------------------------- Breaker
