@@ -90,7 +90,7 @@ test("非法值只影响那一项，并产生 warning", () => {
     JSON.stringify({
       provider: { preset: "nope", timeoutMs: 999999 },
       gate: { records: "yes", allow: ["ls *", 42, ""], deny: "sudo *" },
-      thresholds: { intent_coverage: 0.2, no_secret_egress: 0.97 },
+      thresholds: { allow: 0.2 },
       onUnavailable: { mode: "whatever" },
     }),
   );
@@ -100,8 +100,7 @@ test("非法值只影响那一项，并产生 warning", () => {
   assert.equal(r.config.gate.records, "status", "非法枚举 → 默认值");
   assert.deepEqual(r.config.gate.allow, ["ls *"], "数组里的坏条目被丢掉，好的留下");
   assert.deepEqual(r.config.gate.deny, [], "非法类型整体丢弃");
-  assert.equal(r.config.thresholds.intent_coverage, 0.6, "0.2 丢掉了两侧区间 → 拒绝");
-  assert.equal(r.config.thresholds.no_secret_egress, 0.97);
+  assert.equal(r.config.thresholds.allow, 0.6, "0.2 低于下限 → 拒绝并回落默认值");
   assert.equal(r.config.onUnavailable.mode, "degraded");
   assert.ok(r.warnings.length >= 5, `应产生多条 warning，实际 ${r.warnings.length}`);
 });
@@ -136,10 +135,10 @@ test("坏 JSON 只产生 warning，不影响其它配置", () => {
   assert.equal(r.config.enabled, true);
 });
 
-test("阈值必须保留两侧的「未明确」区间（只能落在 0.5 之上）", () => {
+test("阈值有下限：低于 0.5 会被拒绝并回落默认值", () => {
   const { agentDir, cwd } = scaffold();
-  writeFileSync(join(agentDir, "pi-jev-suite.json"), JSON.stringify({ thresholds: { no_secret_egress: 0.5 } }));
+  writeFileSync(join(agentDir, "pi-jev-suite.json"), JSON.stringify({ thresholds: { allow: 0.2 } }));
   const r = loadConfig({ agentDir, cwd, trusted: true });
-  assert.equal(r.config.thresholds.no_secret_egress, DEFAULT_CONFIG.thresholds.no_secret_egress);
-  assert.match(r.warnings.join("\n"), /两侧都要留/);
+  assert.equal(r.config.thresholds.allow, DEFAULT_CONFIG.thresholds.allow);
+  assert.match(r.warnings.join("\n"), /0\.5 < 阈值/);
 });

@@ -2,9 +2,8 @@
  * 状态显示：常驻在**编辑器上方**的 widget（默认位置），显示最近一次判定的结果。
  *
  * 首行 = 结果 · 落点/模型 · 耗时。
- * 第二行 = 拦下给理由（带 p 与阈值）；**放行给三个概率** ——
- * 「条件都通过」那类汇总只是把首行换个说法重复一遍，真正有信息量的是哪条在骑阈值线
- * （例如 egress 0.84 对面阈值 0.85）。
+ * 第二行 = 拦下给理由（带 p 与阈值）；**放行给读数** ——
+ * 「可以放行」这类汇总只是把首行换个说法重复一遍。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -20,10 +19,8 @@ function breaker(): Breaker {
   return new Breaker({ breakerAfter: 3, cooldownMs: 60_000, now: () => 0 });
 }
 
-const CONDITIONS: readonly ConditionOutcome[] = [
-  { id: "intent_coverage", kind: "required", p: 0.82, threshold: 0.6, verdict: "satisfied" },
-  { id: "no_secret_egress", kind: "forbidden", p: 0.84, threshold: 0.85, verdict: "unclear" },
-  { id: "no_irreversible_damage", kind: "forbidden", p: 0.53, threshold: 0.85, verdict: "unclear" },
+const ALLOWED: readonly ConditionOutcome[] = [
+  { id: "allow", kind: "required", p: 0.91, threshold: 0.6, verdict: "satisfied" },
 ];
 
 test("放行与拦下都显示，并带上模型与耗时", () => {
@@ -49,7 +46,7 @@ test("放行与拦下都显示，并带上模型与耗时", () => {
   );
 });
 
-test("快路径与白名单不打模型名（没走 Jev 就没有模型）", () => {
+test("落点标签：快路径 / 白名单 / 拦截规则 / 硬拦 / 模型名", () => {
   assert.equal(
     formatStatusLine(breaker(), { tool: "bash", kind: "allow", layer: "readonly", latencyMs: 0 }),
     "jev-suite 放行 bash · 快路径 0ms",
@@ -58,9 +55,26 @@ test("快路径与白名单不打模型名（没走 Jev 就没有模型）", () 
     formatStatusLine(breaker(), { tool: "write", kind: "allow", layer: "config" }),
     "jev-suite 放行 write · 白名单",
   );
+  // 命中 deny 被拦时同样落在 config 层，但标签必须不一样
+  assert.equal(
+    formatStatusLine(breaker(), { tool: "bash", kind: "block", layer: "config" }),
+    "jev-suite 拦下 bash · 拦截规则",
+  );
+  assert.equal(
+    formatStatusLine(breaker(), { tool: "bash", kind: "block", layer: "harddeny" }),
+    "jev-suite 拦下 bash · 硬拦",
+  );
+  assert.equal(
+    formatStatusLine(breaker(), { tool: "bash", kind: "block", layer: "unavailable" }),
+    "jev-suite 拦下 bash · Jev 不可用",
+  );
+  assert.equal(
+    formatStatusLine(breaker(), { tool: "bash", kind: "allow", layer: "jev", model: "typesafe/jev-1.13" }),
+    "jev-suite 放行 bash · typesafe/jev-1.13",
+  );
 });
 
-test("第二行：放行给三个概率，拦下给理由", () => {
+test("第二行：放行给读数，拦下给理由", () => {
   assert.deepEqual(
     statusLines(breaker(), {
       tool: "bash",
@@ -68,10 +82,10 @@ test("第二行：放行给三个概率，拦下给理由", () => {
       layer: "jev",
       model: "typesafe/jev-1.13",
       latencyMs: 1200,
-      reason: "条件都通过（意图覆盖、无凭据外发、无可逆损害）",
-      conditions: CONDITIONS,
+      reason: "判断为可放行（p=0.91 ≥ 0.6）",
+      conditions: ALLOWED,
     }),
-    ["jev-suite 放行 bash · typesafe/jev-1.13 1200ms", "  intent 0.82 · egress 0.84 · damage 0.53"],
+    ["jev-suite 放行 bash · typesafe/jev-1.13 1200ms", "  allow 0.91"],
     "放行时不重复那句汇总，改给读数",
   );
 
@@ -82,10 +96,10 @@ test("第二行：放行给三个概率，拦下给理由", () => {
       layer: "jev",
       model: "typesafe/jev-1.13",
       latencyMs: 900,
-      reason: "明确否定：no_secret_egress（p=0.09 ≤ 0.15）",
-      conditions: [{ ...CONDITIONS[1]!, p: 0.09, verdict: "rejected" as const }],
+      reason: "没有明确认为该放行（p=0.35 < 0.6）",
+      conditions: [{ id: "allow", kind: "required", p: 0.35, threshold: 0.6, verdict: "rejected" }],
     }),
-    ["jev-suite 拦下 bash · typesafe/jev-1.13 900ms", "  明确否定：no_secret_egress（p=0.09 ≤ 0.15）"],
+    ["jev-suite 拦下 bash · typesafe/jev-1.13 900ms", "  没有明确认为该放行（p=0.35 < 0.6）"],
   );
 });
 
@@ -95,13 +109,11 @@ test("第二行：快路径没有读数，就不给第二行", () => {
   ]);
 });
 
-test("formatReadings：短标签、认不得的 id 用原样、非有限值写 n/a", () => {
-  assert.equal(formatReadings(CONDITIONS), "intent 0.82 · egress 0.84 · damage 0.53");
+test("formatReadings：非有限值写 n/a", () => {
+  assert.equal(formatReadings(ALLOWED), "allow 0.91");
   assert.equal(
-    formatReadings([
-      { id: "custom_condition", kind: "forbidden", p: Number.NaN, threshold: 0.9, verdict: "unclear" },
-    ]),
-    "custom_condition n/a",
+    formatReadings([{ id: "allow", kind: "required", p: Number.NaN, threshold: 0.6, verdict: "rejected" }]),
+    "allow n/a",
   );
 });
 
@@ -121,7 +133,7 @@ test("降级与暂停优先显示，且只给一行", () => {
     kind: "block",
     layer: "jev",
     reason: "随便",
-    conditions: CONDITIONS,
+    conditions: ALLOWED,
   });
   assert.equal(lines.length, 1, "降级状态本身就说完了一切");
   assert.match(lines[0]!, /DEGRADED/);

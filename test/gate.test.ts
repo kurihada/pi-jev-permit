@@ -35,7 +35,7 @@ function fakeClient(result: AskResult): { client: JevClient; calls: AskRequest[]
   return { client, calls };
 }
 
-const allowedAnswers = { intent_coverage: 0.9, no_secret_egress: 0.95, no_irreversible_damage: 0.95 };
+const allowedAnswers = { allow: 0.9 };
 
 function okResult(answers: Record<string, number> = allowedAnswers): AskResult {
   return { ok: true, answers, model: "test", inputTokens: 10, outputTokens: 1, usd: 0, latencyMs: 7 };
@@ -57,70 +57,51 @@ function deps(over: Partial<GateDeps> = {}): GateDeps {
 
 // ---------------------------------------------------------------- combine
 
-test("combine：三项都满足 → 放行", () => {
-  const j = combine(allowedAnswers, T);
+test("combine：明确认为该放行（p ≥ 阈值）→ 放行", () => {
+  const j = combine({ allow: 0.9 }, T);
   assert.equal(j.allow, true);
-  assert.equal(j.decidingRule, "intent_coverage");
+  assert.equal(j.decidingRule, "allow");
+  assert.equal(j.conditions.length, 1, "只有一个条件了");
 });
 
-test("combine：禁项被明确否定 → 拦，且不看意图", () => {
-  const j = combine({ ...allowedAnswers, no_secret_egress: 0.02 }, T);
-  assert.equal(j.allow, false);
-  assert.equal(j.decidingRule, "no_secret_egress");
-  assert.match(j.reason, /明确否定/);
-  const j2 = combine({ ...allowedAnswers, no_irreversible_damage: 0.1 }, T);
-  assert.equal(j2.decidingRule, "no_irreversible_damage");
+test("combine：阈值边界 —— 正好等于算放行，差一点就不放", () => {
+  assert.equal(combine({ allow: T.allow }, T).allow, true);
+  assert.equal(combine({ allow: T.allow - 0.01 }, T).allow, false);
 });
 
-test("combine：禁项的中间地带被忽略（不拦）", () => {
-  // 阈值 0.85 → 明确否定是 p ≤ 0.15；0.5 / 0.8 都落中间，不构成拦截理由
-  const j = combine({ ...allowedAnswers, no_secret_egress: 0.5, no_irreversible_damage: 0.8 }, T);
-  assert.equal(j.allow, true);
+test("combine：fail-closed —— 说不清就是不放", () => {
+  const muddled = combine({ allow: 0.5 }, T);
+  assert.equal(muddled.allow, false);
+  assert.match(muddled.reason, /没有明确认为该放行/);
+
+  // 模型没答这个 key
+  const missing = combine({}, T);
+  assert.equal(missing.allow, false);
+  assert.match(missing.reason, /没有回答/);
+
+  // 非有限值同样不放
+  assert.equal(combine({ allow: Number.NaN }, T).allow, false);
+  assert.equal(combine({ allow: Number.POSITIVE_INFINITY }, T).allow, false);
 });
 
-test("combine：禁项阈值必须让「明显危害」够得着否定线（e2e 抓到的真漏洞）", () => {
-  // 实测：读 ~/.ssh/id_rsa 时模型的 no_secret_egress = 0.10
-  const credentialRead = { ...allowedAnswers, no_secret_egress: 0.1 };
-  assert.equal(combine(credentialRead, T).allow, false, "0.10 必须能触发否定线");
-  assert.equal(combine(credentialRead, T).decidingRule, "no_secret_egress");
-
-  // 旧默认值 0.97 的否定线是 p ≤ 0.03 —— 那个区间模型不会给，规则等于失效
-  const oldDefault = { ...T, no_secret_egress: 0.97 };
-  assert.equal(combine(credentialRead, oldDefault).allow, true, "这就是旧默认值的洞");
-
-  // 普通命令的读数远高于阈值，不受影响
-  assert.equal(combine({ ...allowedAnswers, no_secret_egress: 0.95 }, T).allow, true);
-});
-
-test("combine：意图没被明确满足就拦（这条是唯一真正的权限问题）", () => {
-  const low = combine({ ...allowedAnswers, intent_coverage: 0.35 }, T);
-  assert.equal(low.allow, false);
-  assert.equal(low.decidingRule, "intent_coverage");
-  assert.match(low.reason, /没有明确覆盖/);
-
-  // 边界：正好等于阈值算满足
-  assert.equal(combine({ ...allowedAnswers, intent_coverage: 0.6 }, T).allow, true);
-  // 中间地带（0.55）不算"明确满足"
-  assert.equal(combine({ ...allowedAnswers, intent_coverage: 0.55 }, T).allow, false);
-});
-
-test("combine：没答的 key 不放行（答不出来 ≠ 同意）", () => {
-  const j = combine({ no_secret_egress: 0.95, no_irreversible_damage: 0.95 }, T);
-  assert.equal(j.allow, false);
-  assert.match(j.reason, /没有回答/);
-});
-
-test("gateQuestions：三个条件都带上 criteria（中间地带必须存在）", () => {
+test("gateQuestions：只有一个问题，且三个考量都写进了那一个提问里", () => {
   const questions = gateQuestions();
-  assert.deepEqual(Object.keys(questions).sort(), ["intent_coverage", "no_irreversible_damage", "no_secret_egress"]);
-  for (const q of Object.values(questions)) {
-    assert.equal(q.type, "noul");
-    assert.ok(q.criteria?.true);
-    assert.ok(q.criteria?.false);
-    const instructions = q.instructions as Record<string, unknown>;
-    assert.equal(instructions["judge"], "value");
-    assert.equal(instructions["reference"], "context");
-  }
+  assert.deepEqual(Object.keys(questions), ["allow"]);
+
+  const q = questions["allow"]!;
+  assert.equal(q.type, "noul");
+  assert.ok(q.criteria?.true);
+  assert.ok(q.criteria?.false);
+  const instructions = q.instructions as Record<string, unknown>;
+  assert.equal(instructions["judge"], "value");
+  assert.equal(instructions["reference"], "context");
+
+  // 推理被折进了同一个提问 —— 漏措任何一个考量，复合判定就会瞎一块
+  const text = String(instructions["question"]);
+  assert.match(text, /user_intent/, "要在用户正在做的任务内");
+  assert.match(text, /secret|credential/i, "不能把凭据弄出去");
+  assert.match(text, /undo|destroy/i, "不能造成不可逆损害");
+  assert.match(text, /All three must hold/, "三者都成立才放行");
 });
 
 // ---------------------------------------------------------------- 断路器
@@ -314,7 +295,7 @@ test("端到端：需要判定的命令会带上意图、原因与脱敏后的�
   assert.ok(String(state["operation"]).includes("<redacted>"), "命令里的凭据必须被抹掉");
   assert.equal(state["user_intent"], "请把 README 里的命令更新一下");
   assert.deepEqual(state["matched_policy_reasons"], ["不在只读表：curl"]);
-  assert.ok(f.calls[0]!.questions["intent_coverage"]);
+  assert.ok(f.calls[0]!.questions["allow"]);
 });
 
 test("端到端：没有 key 时第 ③ 层拦，第 ①② 层照常", async () => {
@@ -358,12 +339,12 @@ test("端到端：暂停时全放行", async () => {
 });
 
 test("端到端：意图为空时用占位文本（不能读成“没要求所以随意”）", async () => {
-  const f = fakeClient(okResult({ ...allowedAnswers, intent_coverage: 0.1 }));
+  const f = fakeClient(okResult({ allow: 0.1 }));
   const v = await evaluateToolCall("bash", { command: "npm install" }, deps({ client: f.client, intent: "" }));
   const state = f.calls[0]!.state.value as Record<string, unknown>;
   assert.equal(state["user_intent"], NO_INTENT_PLACEHOLDER);
   assert.equal(v.kind, "block");
-  assert.equal(v.judgment?.decidingRule, "intent_coverage");
+  assert.equal(v.judgment?.decidingRule, "allow");
 });
 
 test("端到端：项目内的普通写入不判定，也不读取文件内容", async () => {

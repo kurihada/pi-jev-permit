@@ -83,9 +83,8 @@ export interface ToolsConfig {
 }
 
 export interface Thresholds {
-  intent_coverage: number;
-  no_secret_egress: number;
-  no_irreversible_damage: number;
+  /** 放行阈值：模型给出的「该放行」概率 ≥ 它才放，否则拦（含说不清的情况） */
+  allow: number;
 }
 
 export interface OnUnavailable {
@@ -125,18 +124,14 @@ export const DEFAULT_CONFIG: SuiteConfig = {
   },
   tools: { enabled: true },
   /**
-   * 两个「禁项」的阈值是**实测校准**过的，不能照搬上游的 0.97 / 0.8。
+   * 只放行**明确认为该放行**的：一个概率、一个阈值。
    *
-   * 模型对「没有发生危害」这类问题的回答不会给到极端值：一条明显在读私钥的命令给的是 0.10，
-   * 不是 0.01。阈值 0.97 意味着否定线是 p ≤ 0.03 —— 这个区间模型根本不会到，规则等于永不生效
-   * （e2e 实测：`cat ~/.ssh/id_rsa` 被放行）。
-   *
-   * 0.85（否定线 p ≤ 0.15）能抓住明显的危害，又不会误伤普通命令（实测 0.93–0.97）。
+   * 0.6 是实测校准出来的起点：单条件问「这符合用户在做的任务吗」时，明确覆盖给 0.77–0.98、
+   * 没被要求给 0.06–0.15。现在三个考量折进了同一个提问，边界会往中间靠一些，
+   * 所以观察期要用 `/jev-suite stats` 看这个数的分布再定（它是唯一的旋钮）。
    */
   thresholds: {
-    intent_coverage: 0.6,
-    no_secret_egress: 0.85,
-    no_irreversible_damage: 0.85,
+    allow: 0.6,
   },
   onUnavailable: { mode: "degraded", breakerAfter: 3, cooldownMs: 60000 },
 };
@@ -272,7 +267,7 @@ function coerceThreshold(v: unknown, field: string, warnings: string[], fallback
     return v;
   }
   warnings.push(
-    `${field}: 期望 ${LIMITS.minThreshold} < 阈值 <= ${LIMITS.maxThreshold}（两侧都要留"未明确"区间），` +
+    `${field}: 期望 ${LIMITS.minThreshold} < 阈值 <= ${LIMITS.maxThreshold}，` +
       `得到 ${JSON.stringify(v)}，已用默认值 ${fallback}`,
   );
   return fallback;
@@ -416,24 +411,7 @@ export function loadConfig(opts: LoadOptions): LoadResult {
       provider: coerceProvider(toolsRaw.provider, "tools.provider", warnings),
     },
     thresholds: {
-      intent_coverage: coerceThreshold(
-        thrRaw.intent_coverage,
-        "thresholds.intent_coverage",
-        warnings,
-        defaults.thresholds.intent_coverage,
-      ),
-      no_secret_egress: coerceThreshold(
-        thrRaw.no_secret_egress,
-        "thresholds.no_secret_egress",
-        warnings,
-        defaults.thresholds.no_secret_egress,
-      ),
-      no_irreversible_damage: coerceThreshold(
-        thrRaw.no_irreversible_damage,
-        "thresholds.no_irreversible_damage",
-        warnings,
-        defaults.thresholds.no_irreversible_damage,
-      ),
+      allow: coerceThreshold(thrRaw.allow, "thresholds.allow", warnings, defaults.thresholds.allow),
     },
     onUnavailable: {
       mode: coerceEnum(
