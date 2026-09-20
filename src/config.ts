@@ -72,8 +72,8 @@ export interface GateConfig {
   deny: string[];
   extraReadOnly: string[];
   transparentWrappers: string[];
+  /** 附加保护模式；内建的保护表在 policy.ts，**不能通过配置取消** */
   protectedPaths: string[];
-  extraProtectedPaths: string[];
 }
 
 export interface ToolsConfig {
@@ -122,7 +122,6 @@ export const DEFAULT_CONFIG: SuiteConfig = {
     extraReadOnly: [],
     transparentWrappers: ["rtk"],
     protectedPaths: [],
-    extraProtectedPaths: [],
   },
   tools: { enabled: true },
   thresholds: {
@@ -402,7 +401,6 @@ export function loadConfig(opts: LoadOptions): LoadResult {
         warnings,
       ),
       protectedPaths: coercePatterns(gateRaw.protectedPaths, "gate.protectedPaths", warnings),
-      extraProtectedPaths: coercePatterns(gateRaw.extraProtectedPaths, "gate.extraProtectedPaths", warnings),
     },
     tools: {
       enabled: coerceBool(toolsRaw.enabled, "tools.enabled", warnings, defaults.tools.enabled),

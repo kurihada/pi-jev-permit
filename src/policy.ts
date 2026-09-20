@@ -623,3 +623,109 @@ export function decideBash(command: string, policy: BashPolicy): BashResult {
     segments,
   };
 }
+
+// ---------------------------------------------------------------- 保护路径
+
+/**
+ * 目录段：路径里任意一段命中就保护。
+ *
+ * 两类内容在这里：改了就改变“agent 被告知什么”的（.git/.pi/.claude/AGENTS.md），
+ * 和装了凭据的（.ssh/.aws/.gnupg/.npmrc…）。
+ */
+export const PROTECTED_DIRECTORY_SEGMENTS: readonly string[] = [
+  ".git", ".ssh", ".aws", ".gnupg", ".husky", ".pi", ".claude", ".codex", ".kube", ".docker",
+];
+
+export const PROTECTED_PATH_FRAGMENTS: readonly string[] = [
+  "/.github/workflows/", "/.config/gh/", "/.config/gcloud/", "/.docker/config.json",
+];
+
+export const PROTECTED_FILE_PATTERNS: readonly RegExp[] = [
+  /^\.env$/,
+  /^\.env\.[A-Za-z0-9_-]+$/,
+  /^\.npmrc$/,
+  /^\.netrc$/,
+  /^\.pgpass$/,
+  /^\.mcp\.json$/,
+  /^credentials(\.json)?$/,
+  /^id_(rsa|dsa|ecdsa|ed25519)$/,
+  /\.(pem|key|p12|pfx)$/,
+  /^\.?(bashrc|zshrc|bash_profile|profile|zprofile)$/,
+  /^AGENTS\.md$/i,
+  /^CLAUDE\.md$/i,
+];
+
+const PROTECTED_ENV_TEMPLATE_EXEMPT = /^\.env\.(example|sample|template|dist)$/;
+
+/** 本包自己的配置与日志：**永远允许写**（否则会重现「连自己的配置都改不了」） */
+export function isExemptPath(absolutePath: string, exempt: readonly string[]): boolean {
+  const normalized = absolutePath.replace(/\/+/g, "/");
+  return exempt.some((prefix) => {
+    const clean = prefix.replace(/\/+$/, "");
+    return clean.length > 0 && normalized.startsWith(clean);
+  });
+}
+
+/**
+ * 返回 null = 不是保护路径。
+ *
+ * `extra` 是配置里的附加模式（子串或 glob 都行）。
+ * `exempt` 是**永远允许**的绝对路径前缀 —— 本包自己的配置与日志必须能改，
+ * 否则就会出现“连自己的配置都改不了”那个坑（旧方案里的实测问题）。
+ */
+export function protectedPathReason(
+  absolutePath: string,
+  extra: readonly string[] = [],
+  exempt: readonly string[] = [],
+): string | null {
+  const normalized = absolutePath.replace(/\/+/g, "/");
+  if (isExemptPath(normalized, exempt)) return null;
+
+  const segments = normalized.split("/").filter(Boolean);
+  const segment = segments.find((part) => PROTECTED_DIRECTORY_SEGMENTS.includes(part.toLowerCase()));
+  if (segment !== undefined) return `受保护目录段：${segment}`;
+
+  const lowered = normalized.toLowerCase();
+  const fragment = PROTECTED_PATH_FRAGMENTS.find((part) => lowered.includes(part));
+  if (fragment !== undefined) return `受保护路径：${fragment}`;
+
+  const base = segments[segments.length - 1] ?? "";
+  if (!PROTECTED_ENV_TEMPLATE_EXEMPT.test(base)) {
+    const pattern = PROTECTED_FILE_PATTERNS.find((re) => re.test(base));
+    if (pattern !== undefined) return `受保护文件：${base}`;
+  }
+
+  for (const pattern of extra) {
+    if (pattern.length === 0) continue;
+    if (normalized.includes(pattern) || matchCommandPattern(pattern, normalized)) {
+      return `命中配置的 protectedPaths：${pattern}`;
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------- 脱敏
+
+/**
+ * 送出去之前把凭据抹掉。
+ *
+ * 这是**安全网不是保证** —— 没见过的凭据格式会穿过去，所以它只降风险，不能拿来当“可以随便发”的理由。
+ */
+export const SECRET_PATTERNS: readonly RegExp[] = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+  /\b(sk|rk)-[A-Za-z0-9_-]{16,}/g,
+  /\bgh[pousr]_[A-Za-z0-9]{16,}/g,
+  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
+  /\bapikey_[A-Za-z0-9_-]{8,}/g,
+  /\bBearer\s+[A-Za-z0-9._-]{16,}/g,
+  /\b(?:api[_-]?key|secret|token|password|passwd|access[_-]?key|client[_-]?secret)\s*[=:]\s*["']?[^\s"',)]{8,}/gi,
+];
+
+export const REDACTED = "<redacted>";
+
+export function redact(text: string): string {
+  let out = text;
+  for (const pattern of SECRET_PATTERNS) out = out.replace(pattern, REDACTED);
+  return out;
+}

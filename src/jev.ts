@@ -308,12 +308,33 @@ export interface AskLogRecord {
   readonly detail?: string;
 }
 
+export interface DecisionLogRecord {
+  readonly kind: "decision";
+  readonly ts: string;
+  readonly tool: string;
+  readonly layer: string;
+  readonly status: "allowed" | "blocked";
+  readonly reason: string;
+  readonly decidingRule?: string;
+  readonly conditions?: readonly {
+    readonly id: string;
+    readonly p: number;
+    readonly threshold: number;
+    readonly verdict: string;
+  }[];
+  readonly latencyMs?: number;
+  readonly transport: string;
+}
+
+/** 同一个 jsonl 文件里两种记录：core 记每次提问，门禁记每次判定 */
+export type LogRecord = AskLogRecord | DecisionLogRecord;
+
 export function logPath(agentDir: string): string {
   return join(agentDir, "pi-jev-suite-log.jsonl");
 }
 
 /** 写日志失败也不能影响判定 */
-export function appendLog(agentDir: string, record: AskLogRecord): void {
+export function appendLog(agentDir: string, record: LogRecord): void {
   try {
     mkdirSync(agentDir, { recursive: true });
     appendFileSync(logPath(agentDir), `${JSON.stringify(record)}\n`);
