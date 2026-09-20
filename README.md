@@ -27,7 +27,9 @@ Layer 0 is not configurable and is checked on the raw text before anything else.
 
 Allowed when `p >= thresholds.allow` (default `0.6`). Everything else — including "unclear" and "no answer" — is blocked: **silence is never consent.**
 
-Two details matter more than they look:
+The user's most recent message travels separately as `latest_user_message`: the intent window is a conversation, and a direct instruction about the call being judged is what authorises a risky action - it should not have to be inferred from a dozen earlier messages. A blocked call then gets exactly one follow-up question (unauthorised, credential risk, or irreversible risk), so the block message names the reason instead of leaving three different next moves to guess from.
+
+Three details matter more than they look:
 
 - **Segments, not strings.** `cd /repo && npm test` is decomposed into segments and each is matched on its own, so an allow rule can actually express it (a whole-string matcher cannot: one `;` would disable every rule). Transparent wrappers (`rtk`) are stripped and a leading `VAR=value` assignment is treated as inert, so a wrapped read-only command still takes the fast path. Hard deny, by contrast, always looks at the raw text.
 - **Redaction before anything leaves the machine.** Secrets in the command text (PEM blocks, JWTs, `sk-…`, `ghp_…`, `AKIA…`, `Bearer …`, `api_key=…`) become `<redacted>`. File contents, diffs and tool output are never sent; a write/edit contributes only its path.
