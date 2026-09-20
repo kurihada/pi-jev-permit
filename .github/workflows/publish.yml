@@ -1,0 +1,38 @@
+# Release flow: bump "version" in package.json, commit, then push a tag.
+#
+#   npm version patch --no-git-tag-version
+#   git commit -am "chore: release 0.1.1"
+#   git tag v0.1.1
+#   git push origin main v0.1.1
+#
+# npm authenticates through OIDC (trusted publishing), so no publish token
+# is stored anywhere. The npm side is configured once, at
+# package settings -> Trusted publishing -> GitHub Actions, and there
+# "Allowed actions" must allow direct `npm publish`: staging is allowed
+# by default, direct publishing is not.
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  id-token: write # required for trusted publishing and provenance
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm publish
