@@ -241,12 +241,11 @@ export default function piJevSuite(pi: ExtensionApiLike & CommandApiLike): void 
 
       switch (sub) {
         case "login": {
-          // The two consumers can use different protocols (gate via the gateway, tools via the official API),
-          // so look config up by protocol: no argument logs into the default; with one, find the consumer using that protocol.
+          // The gate may point at a different protocol than the global default, so look config up by
+          // protocol: no argument logs into the default; with one, find the consumer that uses it.
           const candidates: { label: string; provider: ResolvedProvider }[] = [
             { label: "default", provider: resolveProvider(config.provider) },
             { label: "gate", provider: resolveProvider(config.gate.provider ?? config.provider) },
-            { label: "tools", provider: resolveProvider(config.tools.provider ?? config.provider) },
           ];
           const requested = rest[0];
           const chosen =

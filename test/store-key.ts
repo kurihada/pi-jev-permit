@@ -22,7 +22,6 @@ const { config } = loadConfig({ agentDir, cwd: process.cwd(), trusted: false });
 const candidates: { label: string; provider: ResolvedProvider }[] = [
   { label: "default", provider: resolveProvider(config.provider) },
   { label: "gate", provider: resolveProvider(config.gate.provider ?? config.provider) },
-  { label: "tools", provider: resolveProvider(config.tools.provider ?? config.provider) },
 ];
 
 const requested = process.argv[2];
