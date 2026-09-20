@@ -1,0 +1,28 @@
+{
+  "name": "pi-jev-suite",
+  "version": "0.0.1",
+  "private": true,
+  "description": "The single Jev (TypeSafe System One) surface for the Pi coding agent: permission gate, jev_evaluate tool, advisor second opinion",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --test --experimental-strip-types test/",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  }
+}
