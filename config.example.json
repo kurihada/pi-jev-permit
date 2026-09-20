@@ -1,0 +1,41 @@
+{
+  "provider": {
+    "preset": "gateway",
+    "timeoutMs": 4000,
+    "maxRetries": 1
+  },
+  "budget": {
+    "requestsPerDay": 2000,
+    "usdPerDay": 1.0
+  },
+  "gate": {
+    "records": "status",
+    "allow": [
+      "cd *",
+      "taptap-cli *",
+      "git add *",
+      "git commit *",
+      "git pull *",
+      "npm run test",
+      "npm run test *",
+      "pnpm run test",
+      "go test *",
+      "go build *",
+      "cargo test *",
+      "cargo build *"
+    ],
+    "deny": ["sudo *", "chmod 777 *", "dd if=*"],
+    "transparentWrappers": ["rtk"],
+    "protectedPaths": ["/etc/", "~/.ssh/", "~/.aws/"]
+  },
+  "tools": {
+    "provider": {
+      "preset": "typesafe"
+    }
+  },
+  "onUnavailable": {
+    "mode": "degraded",
+    "breakerAfter": 3,
+    "cooldownMs": 60000
+  }
+}

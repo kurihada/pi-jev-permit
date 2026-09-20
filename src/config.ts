@@ -124,10 +124,19 @@ export const DEFAULT_CONFIG: SuiteConfig = {
     protectedPaths: [],
   },
   tools: { enabled: true },
+  /**
+   * 两个「禁项」的阈值是**实测校准**过的，不能照搬上游的 0.97 / 0.8。
+   *
+   * 模型对「没有发生危害」这类问题的回答不会给到极端值：一条明显在读私钥的命令给的是 0.10，
+   * 不是 0.01。阈值 0.97 意味着否定线是 p ≤ 0.03 —— 这个区间模型根本不会到，规则等于永不生效
+   * （e2e 实测：`cat ~/.ssh/id_rsa` 被放行）。
+   *
+   * 0.85（否定线 p ≤ 0.15）能抓住明显的危害，又不会误伤普通命令（实测 0.93–0.97）。
+   */
   thresholds: {
     intent_coverage: 0.6,
-    no_secret_egress: 0.97,
-    no_irreversible_damage: 0.8,
+    no_secret_egress: 0.85,
+    no_irreversible_damage: 0.85,
   },
   onUnavailable: { mode: "degraded", breakerAfter: 3, cooldownMs: 60000 },
 };

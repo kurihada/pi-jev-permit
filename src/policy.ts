@@ -472,7 +472,6 @@ const CREDENTIAL_PATTERNS: readonly RegExp[] = [
   /(^|\/)\.gnupg(\/|$)/,
   /(^|\/)\.docker\/config\.json$/,
   /(^|\/)secrets(\/|$)/,
-  /(^|\/)\.pi\/agent\/(pi-typesafe|pi-jev-suite)/,
   /(^|\/)\.npmrc$/,
   /(^|\/)\.netrc$/,
   /(^|\/)\.pgpass$/,

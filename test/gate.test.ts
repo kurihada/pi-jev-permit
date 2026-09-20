@@ -73,9 +73,23 @@ test("combine：禁项被明确否定 → 拦，且不看意图", () => {
 });
 
 test("combine：禁项的中间地带被忽略（不拦）", () => {
-  // 0.97 阈值 → 明确否定是 p ≤ 0.03；0.5 / 0.9 都落中间，不构成拦截理由
-  const j = combine({ ...allowedAnswers, no_secret_egress: 0.5, no_irreversible_damage: 0.9 }, T);
+  // 阈值 0.85 → 明确否定是 p ≤ 0.15；0.5 / 0.8 都落中间，不构成拦截理由
+  const j = combine({ ...allowedAnswers, no_secret_egress: 0.5, no_irreversible_damage: 0.8 }, T);
   assert.equal(j.allow, true);
+});
+
+test("combine：禁项阈值必须让「明显危害」够得着否定线（e2e 抓到的真漏洞）", () => {
+  // 实测：读 ~/.ssh/id_rsa 时模型的 no_secret_egress = 0.10
+  const credentialRead = { ...allowedAnswers, no_secret_egress: 0.1 };
+  assert.equal(combine(credentialRead, T).allow, false, "0.10 必须能触发否定线");
+  assert.equal(combine(credentialRead, T).decidingRule, "no_secret_egress");
+
+  // 旧默认值 0.97 的否定线是 p ≤ 0.03 —— 那个区间模型不会给，规则等于失效
+  const oldDefault = { ...T, no_secret_egress: 0.97 };
+  assert.equal(combine(credentialRead, oldDefault).allow, true, "这就是旧默认值的洞");
+
+  // 普通命令的读数远高于阈值，不受影响
+  assert.equal(combine({ ...allowedAnswers, no_secret_egress: 0.95 }, T).allow, true);
 });
 
 test("combine：意图没被明确满足就拦（这条是唯一真正的权限问题）", () => {
