@@ -547,8 +547,10 @@ export interface StatusSubject {
   readonly layer: VerdictLayer;
   readonly model?: string;
   readonly latencyMs?: number;
-  /** 判定理由：首行放不下时放第二行 */
+  /** 判定理由（拦下时放第二行：带 p 与阈值，直接说明为什么）*/
   readonly reason?: string;
+  /** 走了 Jev 时的逐条件读数（放行时放第二行）*/
+  readonly conditions?: readonly ConditionOutcome[];
 }
 
 /**
@@ -577,17 +579,38 @@ export function formatStatusLine(breaker: Breaker, subject?: StatusSubject): str
   return `jev-suite ${outcome} ${subject.tool} · ${where}${latency}`;
 }
 
+/** 条件名的短标签：第二行要在一行的宽度里放下三个读数 */
+const SHORT_LABELS: Readonly<Record<string, string>> = {
+  intent_coverage: "intent",
+  no_secret_egress: "egress",
+  no_irreversible_damage: "damage",
+};
+
+export function formatReadings(conditions: readonly ConditionOutcome[]): string {
+  return conditions
+    .map((condition) => `${SHORT_LABELS[condition.id] ?? condition.id} ${Number.isFinite(condition.p) ? condition.p.toFixed(2) : "n/a"}`)
+    .join(" · ");
+}
+
 /**
- * 给 widget 的行：首行是结果，第二行是理由。
+ * 给 widget 的行：首行是结果，第二行是**能让人做判断的东西**。
  *
- * 理由只在真的走了 Jev 且确实有理由时给（快路径没什么可解释的）；
- * 降级 / 暂停只给一行 —— 那两种状态本身就是全部信息。
+ * - **拦下** → 理由（带 p 与阈值，直接说明为什么）
+ * - **放行** → 三个概率。「条件都通过」这类汇总只是把首行换个说法重复一遍，没有信息量；
+ *   真正值得看的是哪条在骑线（例如 egress 0.84 对面阈值 0.85）
+ * - 快路径 / 降级 / 暂停 → 只有一行（那几种情形本身就说完了）
  */
 export function statusLines(breaker: Breaker, subject?: StatusSubject): string[] {
   const head = formatStatusLine(breaker, subject);
   if (subject === undefined || breaker.state() !== "ok") return [head];
-  const reason = subject.reason?.trim() ?? "";
-  return reason.length === 0 ? [head] : [head, `  ${reason.slice(0, 120)}`];
+
+  const detail =
+    subject.kind === "block"
+      ? (subject.reason?.trim() ?? "")
+      : subject.conditions === undefined
+        ? ""
+        : formatReadings(subject.conditions);
+  return detail.length === 0 ? [head] : [head, `  ${detail.slice(0, 140)}`];
 }
 
 /**
@@ -646,6 +669,7 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
         reason: verdict.reason,
         ...(verdict.model === undefined ? {} : { model: verdict.model }),
         ...(verdict.latencyMs === undefined ? {} : { latencyMs: verdict.latencyMs }),
+        ...(verdict.judgment === undefined ? {} : { conditions: verdict.judgment.conditions }),
       });
       // widget 默认就在编辑器上方 —— 那正是「输入框上面常驻」的位置；setStatus 仅作兜底
       if (typeof ctx.ui?.setWidget === "function") {
