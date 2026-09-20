@@ -232,14 +232,97 @@ export function blockReasonQuestions(): Record<string, NoulQuestion> {
 export function pickBlockReason(
   answers: Record<string, number>,
   threshold: number,
-): { readonly label: string; readonly p: number } | null {
-  let best: { label: string; p: number } | null = null;
+): { readonly id: string; readonly label: string; readonly p: number } | null {
+  let best: { id: string; label: string; p: number } | null = null;
   for (const item of BLOCK_REASON_QUESTIONS) {
     const p = answers[item.id];
     if (typeof p !== "number" || !Number.isFinite(p)) continue;
-    if (best === null || p > best.p) best = { label: BLOCK_REASON_LABELS[item.id] ?? item.id, p };
+    if (best === null || p > best.p) {
+      best = { id: item.id, label: BLOCK_REASON_LABELS[item.id] ?? item.id, p };
+    }
   }
   return best !== null && best.p >= threshold ? best : null;
+}
+
+/** The refusal class no grant may cover: a credential is not a scheduling problem. */
+export const CREDENTIAL_BLOCK_CLASS = "because_credential_risk";
+
+/** One refusal the model made, as `/jev-permit allow` presents it. */
+export interface BlockedCall {
+  readonly id: number;
+  readonly tool: string;
+  readonly summary: string;
+  readonly reason: string;
+  readonly reasonClass?: string;
+}
+
+/** How long a grant stays usable — long enough to retry, short enough to be forgotten by accident. */
+export const DEFAULT_GRANT_TTL_MS = 60_000;
+
+/**
+ * One-shot grants, plus the list of refusals they may point at.
+ *
+ * Only refusals that came from the model are recorded. Layer 0, the deny rules, the read-only fast
+ * path and the unavailable/degraded states all return before `evaluateToolCall` consults this, so
+ * no grant can reach them — that is structural, not a check anyone has to remember.
+ *
+ * The store lives in memory on purpose: a grant dies with the session instead of being written to
+ * disk, and there is no file to edit into existence.
+ */
+export class AllowGrants {
+  private readonly blocks: BlockedCall[] = [];
+  private readonly grants = new Map<string, number>();
+  private nextId = 1;
+  private readonly clock: () => number;
+  private readonly ttlMs: number;
+  private readonly maxBlocks: number;
+
+  constructor(options: { now?: () => number; ttlMs?: number; maxBlocks?: number } = {}) {
+    this.clock = options.now ?? Date.now;
+    this.ttlMs = options.ttlMs ?? DEFAULT_GRANT_TTL_MS;
+    this.maxBlocks = options.maxBlocks ?? 20;
+  }
+
+  private static key(tool: string, summary: string): string {
+    return `${tool}\u0000${summary}`;
+  }
+
+  /** Called once per model refusal, so `allow` has something to point at. */
+  record(tool: string, summary: string, reason: string, reasonClass?: string): void {
+    this.blocks.unshift({ id: this.nextId++, tool, summary, reason, reasonClass });
+    if (this.blocks.length > this.maxBlocks) this.blocks.length = this.maxBlocks;
+  }
+
+  list(limit = 10): readonly BlockedCall[] {
+    return this.blocks.slice(0, limit);
+  }
+
+  /** Authorises one retry of the refusal behind `id`. The retry itself consumes it. */
+  grant(
+    id: number,
+  ): { readonly ok: true; readonly call: BlockedCall } | { readonly ok: false; readonly reason: string } {
+    const call = this.blocks.find((item) => item.id === id);
+    if (call === undefined) return { ok: false, reason: `no refused call has id ${id}` };
+    if (call.reasonClass === CREDENTIAL_BLOCK_CLASS) {
+      return {
+        ok: false,
+        reason:
+          "that one was refused over credentials, and it is the one class of refusal no grant covers — " +
+          "use /jev-permit pause if you really mean it",
+      };
+    }
+    this.grants.set(AllowGrants.key(call.tool, call.summary), this.clock() + this.ttlMs);
+    return { ok: true, call };
+  }
+
+  /** Consumes a live grant for exactly this call. A different command is never covered. */
+  take(tool: string, summary: string): boolean {
+    const key = AllowGrants.key(tool, summary);
+    const expiry = this.grants.get(key);
+    if (expiry === undefined) return false;
+    this.grants.delete(key);
+    return this.clock() < expiry;
+  }
 }
 
 export type ConditionVerdict = "satisfied" | "rejected" | "unclear";
@@ -437,7 +520,15 @@ export class Breaker {
 
 // ---------------------------------------------------------------- End-to-end decision
 
-export type VerdictLayer = "config" | "readonly" | "harddeny" | "jev" | "unavailable" | "degraded" | "paused";
+export type VerdictLayer =
+  | "config"
+  | "readonly"
+  | "harddeny"
+  | "jev"
+  | "unavailable"
+  | "degraded"
+  | "paused"
+  | "grant";
 
 export interface GateVerdict {
   readonly kind: "allow" | "block";
@@ -449,6 +540,8 @@ export interface GateVerdict {
   readonly model?: string;
   readonly judgment?: Judgment;
   readonly latencyMs?: number;
+  /** Which of the three refusal classes the follow-up question picked, if any. `allow` refuses to cover a credential refusal. */
+  readonly reasonClass?: string;
 }
 
 export interface GateDeps {
@@ -465,6 +558,8 @@ export interface GateDeps {
   readonly isGitRepository: boolean;
   /** This package's own config file and log: writing them should not be judged. */
   readonly exemptPaths?: readonly string[];
+  /** One-shot grants from /jev-permit allow; absent means the feature is simply off. */
+  readonly grants?: AllowGrants;
   readonly now?: () => number;
 }
 
@@ -534,6 +629,18 @@ export async function evaluateToolCall(
     };
   }
 
+  // A grant covers exactly one retry of one refused call: same tool, same redacted command or
+  // path, one use, and it expires. It sits after the paused / unavailable / degraded checks on
+  // purpose, so a grant can never wave a call through a gate that is not judging at all.
+  if (deps.grants?.take(toolName, operation) === true) {
+    return {
+      kind: "allow",
+      layer: "grant",
+      reason: "allowed once by /jev-permit allow (this grant is now spent)",
+      policyReasons: reasons,
+    };
+  }
+
   const state = buildGateState(
     {
       tool: toolName,
@@ -579,15 +686,17 @@ export async function evaluateToolCall(
   // Blocked: one follow-up question so the message says *why* and not just "not clearly allowed".
   // The three possible reasons call for three different next moves (ask the user, drop the
   // credential, pick a reversible approach), and the reader should not have to guess which.
-  const enriched = await describeBlockedCall(deps.client, state, deps.thresholds.allow, judgment.reason);
+  const explained = await describeBlockedCall(deps.client, state, deps.thresholds.allow, judgment.reason);
+  deps.grants?.record(toolName, operation, explained.text, explained.reasonClass);
   return {
     kind: "block",
     layer: "jev",
-    reason: enriched,
+    reason: explained.text,
     policyReasons: reasons,
     model: result.model,
     judgment,
     latencyMs: result.latencyMs,
+    reasonClass: explained.reasonClass,
   };
 }
 
@@ -602,11 +711,15 @@ async function describeBlockedCall(
   state: JevState,
   threshold: number,
   fallback: string,
-): Promise<string> {
+): Promise<{ readonly text: string; readonly reasonClass?: string }> {
   const asked = await client.ask({ state, questions: blockReasonQuestions() });
-  if (!asked.ok) return fallback;
+  if (!asked.ok) return { text: fallback };
   const reason = pickBlockReason(asked.answers, threshold);
-  return reason === null ? fallback : `${fallback} — most likely because: ${reason.label} (p=${reason.p.toFixed(2)})`;
+  if (reason === null) return { text: fallback };
+  return {
+    text: `${fallback} — most likely because: ${reason.label} (p=${reason.p.toFixed(2)})`,
+    reasonClass: reason.id,
+  };
 }
 
 // ---------------------------------------------------------------- pi wiring
@@ -648,6 +761,8 @@ export interface GateWiring {
   readonly agentDir: string;
   readonly isGitRepository?: boolean;
   readonly exemptPaths?: readonly string[];
+  /** One-shot grants from `/jev-permit allow`; absent means that command has nothing to write to. */
+  readonly grants?: AllowGrants;
   readonly now?: () => number;
 }
 
@@ -795,6 +910,7 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
       latestUserMessage: latestUserMessage(branch),
       isGitRepository: wiring.isGitRepository ?? false,
       ...(wiring.exemptPaths === undefined ? {} : { exemptPaths: wiring.exemptPaths }),
+      ...(wiring.grants === undefined ? {} : { grants: wiring.grants }),
       now,
     };
 
@@ -855,9 +971,16 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
     }
 
     if (verdict.kind === "block") {
+      // The third next move is worth naming: the reader can authorise this one call instead of
+      // changing the approach. A credential refusal is exempt - `allow` refuses those, so
+      // advertising it there would only waste a turn.
+      const escape =
+        verdict.reasonClass === CREDENTIAL_BLOCK_CLASS
+          ? "Only /jev-permit pause can let a call like this through."
+          : "They can authorise this one retry with /jev-permit allow, which lasts 60 seconds and is spent by the retry itself.";
       return {
         block: true,
-        reason: `pi-jev-permit blocked this call: ${verdict.reason}. Do not retry it unchanged — change the approach or ask the user.`,
+        reason: `pi-jev-permit blocked this call: ${verdict.reason}. Do not retry it unchanged — change the approach or ask the user. ${escape}`,
       };
     }
     return undefined;

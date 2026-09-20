@@ -68,6 +68,7 @@ test("the state carries the newest message separately, and the question names th
 
 test("pickBlockReason: the clearest reason, or nothing when none stands out", () => {
   assert.deepEqual(pickBlockReason({ because_irreversible_risk: 0.86, because_outside_task: 0.05 }, 0.6), {
+    id: "because_irreversible_risk",
     label: "could destroy something hard to undo",
     p: 0.86,
   });

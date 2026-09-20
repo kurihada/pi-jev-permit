@@ -21,7 +21,7 @@ import {
   verifyKey,
   writeStoredApiKey,
 } from "./src/jev.ts";
-import { Breaker, type ExtensionApiLike, type GateContextLike, registerGate } from "./src/gate.ts";
+import { AllowGrants, Breaker, type ExtensionApiLike, type GateContextLike, registerGate } from "./src/gate.ts";
 
 export interface CommandApiLike {
   registerCommand(
@@ -222,16 +222,20 @@ export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void
     });
   };
 
+  // One store for the whole session: `/jev-permit allow` writes to it, the gate reads from it.
+  const grants = new AllowGrants();
+
   registerGate(pi, {
     agentDir,
     breaker,
     loadConfig: (ctx) => loadFor(ctx),
     makeClient,
+    grants,
     exemptPaths: exemptPaths(agentDir),
   });
 
   pi.registerCommand(COMMAND_NAME, {
-    description: "Manage pi-jev-permit: login / pause / resume / stats / explain / reload",
+    description: "Manage pi-jev-permit: login / allow / pause / resume / stats / explain / reload",
     handler: async (args, ctx) => {
       const notify = (message: string, level: "info" | "warning" | "error" = "info"): void => {
         ctx.ui?.notify?.(message, level);
@@ -292,6 +296,38 @@ export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void
           writeStoredApiKey(agentDir, provider.protocol, key.trim());
           notify(
             `Saved the ${provider.protocol} key (for ${chosen.label}): ${credentialPath(agentDir, provider.protocol)} (0600)`,
+            "info",
+          );
+          return;
+        }
+
+        case "allow": {
+          const wanted = Number.parseInt(rest[0] ?? "", 10);
+          if (!Number.isFinite(wanted)) {
+            const refused = grants.list(10);
+            if (refused.length === 0) {
+              notify("Nothing has been refused by the model in this session", "info");
+              return;
+            }
+            const rows = refused.map((item) => {
+              const mark =
+                item.reasonClass === "because_credential_risk" ? "  (credentials - pause only)" : "";
+              return `#${item.id}  ${item.tool}  ${item.summary.slice(0, 80)}${mark}`;
+            });
+            notify(
+              `Refused by the model in this session, newest first:\n${rows.join("\n")}\n\n` +
+                "/jev-permit allow <id> authorises one retry: 60 seconds, one use, and only that exact call.",
+              "info",
+            );
+            return;
+          }
+          const issued = grants.grant(wanted);
+          if (!issued.ok) {
+            notify(`Cannot authorise #${wanted}: ${issued.reason}`, "warning");
+            return;
+          }
+          notify(
+            `Authorised one retry: ${issued.call.tool} · ${issued.call.summary.slice(0, 80)} - valid 60 seconds, spent by the retry itself`,
             "info",
           );
           return;
