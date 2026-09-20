@@ -37,7 +37,7 @@ Layer 0 is not configurable and is checked on the raw text before anything else.
 2. **Credentials.** A call that sends secrets anywhere, or reads a credential file into the conversation, is refused — and an instruction does **not** override it; only a human pausing the gate can.
 3. **Irreversibility** — data outside its target, uncommitted work, repository history — weighs rather than vetoes: it lowers the probability for a call nobody asked for, and does not block one the user explicitly asked for.
 
-Allowed when `p >= thresholds.allow` (default `0.6`). Everything else — including "unclear" and "no answer" — is blocked: **silence is never consent.**
+Allowed when `p >= thresholds.allow` (default `0.6`). Everything else — including "unclear" and "no answer" — is blocked: **silence is never consent.** A block is not a dead end: `/jev-permit allow` grants one retry of one refused call, and it reaches exactly as far as the model's own refusals — never a hard deny, never a deny rule, never a credential.
 
 The newest user message travels separately as `latest_user_message`, because the intent window alone is a conversation rather than an instruction. A blocked call then gets exactly one follow-up question — unauthorised, credential risk, or irreversible risk — so the block message names the reason instead of leaving three different next moves to guess from.
 
@@ -86,6 +86,7 @@ Invalid values are dropped with a warning rather than silently defaulted; a miss
 
 | command | what it does |
 | --- | --- |
+| `/jev-permit allow [id]` | lists the calls the model refused this session, newest first; with an id it authorises **one retry** of that exact call — bound to the tool and the redacted command, valid 60 seconds, spent by the retry. It cannot cover a hard deny (never listed) or a credential refusal (marked `pause only`) |
 | `/jev-permit login [systemone\|decisions]` | verifies a key against the endpoint the gate actually uses, then stores it `0600` in that protocol's own slot |
 | `/jev-permit pause [30m]` | allows everything until the deadline, then recovers by itself |
 | `/jev-permit resume` | ends a pause |
