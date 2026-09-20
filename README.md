@@ -6,6 +6,22 @@ Jev returns **numbers, not prose**: one probability per question, plus the model
 
 Two earlier consumers, `jev_evaluate` and `ask_advisor`, were removed. They were thin wrappers over the same call, had never been invoked in live use, and cost a permanent entry in every prompt's tool list; asking Jev a question the agent could answer itself is not worth that.
 
+## First run
+
+1. **Install and restart.** `pi install /path/to/pi-jev-permit`, then quit and relaunch pi — extensions load at startup and the command list is fixed for the session.
+2. **Get a key.** The official route is the TypeSafe console: `console.typesafe.ai` → **API Keys**.
+3. **Only if you bill a gateway or a router**, point the package at it *before* logging in, in `~/.pi/agent/pi-jev-permit.json`:
+
+   ```json
+   { "provider": { "preset": "gateway" } }
+   ```
+
+   Official TypeSafe users need no config at all; the default preset is `typesafe`.
+4. **Log in.** `/jev-permit login` targets the protocol of the global provider; `/jev-permit login decisions` or `systemone` picks one explicitly. The key is verified against the endpoint the gate actually uses *before* it is stored, then written 0600 to `~/.pi/agent/secrets/pi-jev-permit-<protocol>-api-key`.
+5. **Check it.** Run anything that is not read-only and read the line above the editor — it names the model the call was judged by. `/jev-permit stats` shows the same traffic afterwards.
+
+With no key the package still works: read-only commands take the local fast path, and everything else is blocked with a message telling you to log in. That is deliberate — silence is never consent.
+
 ## How a call is judged
 
 ```text
@@ -73,7 +89,7 @@ Invalid values are dropped with a warning rather than silently defaulted; a miss
 | `/jev-permit login [systemone\|decisions]` | verifies a key against the endpoint the gate actually uses, then stores it `0600` in that protocol's own slot |
 | `/jev-permit pause [30m]` | allows everything until the deadline, then recovers by itself |
 | `/jev-permit resume` | ends a pause |
-| `/jev-permit stats` | usage plus, per condition, how often it was satisfied / rejected / unclear |
+| `/jev-permit stats` | usage, plus how the judged calls actually scored |
 | `/jev-permit explain` | the last few decisions: command, layer, reason, readings |
 | `/jev-permit reload` | re-reads the config and reports warnings |
 

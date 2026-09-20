@@ -277,7 +277,16 @@ export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void
             model: provider.model,
           });
           if (!verification.ok) {
-            notify(`key failed verification (${verification.reason}): ${verification.detail}`, "error");
+            // A wrong key and a key sent to the wrong endpoint look identical from here, and the
+            // second one costs an afternoon: which endpoint is used follows provider.preset.
+            const hint =
+              verification.reason === "invalid"
+                ? ` If this key belongs to another endpoint (a gateway or a router), set provider.preset in the config first - it was checked against ${provider.baseUrl}.`
+                : "";
+            notify(
+              `key failed verification (${verification.reason}): ${verification.detail}${hint}`,
+              "error",
+            );
             return;
           }
           writeStoredApiKey(agentDir, provider.protocol, key.trim());
