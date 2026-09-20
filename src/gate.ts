@@ -553,8 +553,9 @@ export function formatStatusLine(breaker: Breaker, subject?: StatusSubject): str
   if (subject === undefined) return "jev-suite ok";
 
   const outcome = subject.kind === "allow" ? "放行" : "拦下";
-  const latency = subject.latencyMs === undefined ? "" : ` ${subject.latencyMs}ms`;
-  return `jev-suite ${outcome} ${subject.tool} · ${whereOf(subject)}${latency}`;
+  // Jev 判的落点（模型 · 读数 · 耗时）全部放第二行，首行不重复它们
+  const where = subject.layer === "jev" ? "" : ` · ${whereOf(subject)}`;
+  return `jev-suite ${outcome} ${subject.tool}${where}`;
 }
 
 export function formatReadings(conditions: readonly ConditionOutcome[]): string {
@@ -571,17 +572,34 @@ export function formatReadings(conditions: readonly ConditionOutcome[]): string 
  *   真正值得看的是哪条在骑线（例如 egress 0.84 对面阈值 0.85）
  * - 快路径 / 降级 / 暂停 → 只有一行（那几种情形本身就说完了）
  */
+/**
+ * 给 widget 的行：
+ *
+ * ```
+ * jev-suite 放行 bash                       ← 首行：结论
+ *   typesafe/jev-1.13 · allow 0.94 · 830ms  ← 次行：证据（模型 · 读数 · 耗时）
+ *   没有明确认为该放行（p=0.04 < 0.6）      ← 只有拦下时多这一行
+ * ```
+ *
+ * 快路径 / 白名单 / 降级 / 暂停只有一行（它们本身就说完了）；证据行只在真的走了 Jev 时出现。
+ */
 export function statusLines(breaker: Breaker, subject?: StatusSubject): string[] {
   const head = formatStatusLine(breaker, subject);
   if (subject === undefined || breaker.state() !== "ok") return [head];
 
-  const detail =
-    subject.kind === "block"
-      ? (subject.reason?.trim() ?? "")
-      : subject.conditions === undefined
-        ? ""
-        : formatReadings(subject.conditions);
-  return detail.length === 0 ? [head] : [head, `  ${detail.slice(0, 140)}`];
+  // 证据行只在**真的判过**时给：单纯一个 0ms 不是证据而是噪音（快路径不该凭空多一行）
+  const judged = subject.model !== undefined || subject.conditions !== undefined;
+  const evidence: string[] = [];
+  if (judged) {
+    if (subject.model !== undefined) evidence.push(subject.model);
+    if (subject.conditions !== undefined) evidence.push(formatReadings(subject.conditions));
+    if (subject.latencyMs !== undefined) evidence.push(`${subject.latencyMs}ms`);
+  }
+
+  const lines = evidence.length === 0 ? [head] : [head, `  ${evidence.join(" · ")}`];
+  const reason = subject.reason?.trim() ?? "";
+  if (subject.kind === "block" && reason.length > 0) lines.push(`  ${reason.slice(0, 140)}`);
+  return lines;
 }
 
 /**
