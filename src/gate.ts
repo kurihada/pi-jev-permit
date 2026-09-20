@@ -504,8 +504,10 @@ export interface StatusSubject {
   readonly layer: VerdictLayer;
   readonly model?: string;
   readonly latencyMs?: number;
-  /** 判定理由（拦下时放第二行：带 p 与阈值，直接说明为什么）*/
+  /** 判定理由（拦下时放最后一行：带 p 与阈值，直接说明为什么）*/
   readonly reason?: string;
+  /** 被判定对象：脱敏 + 压平 + 截断后的命令或路径（首行显示）*/
+  readonly summary?: string;
   /** 走了 Jev 时的逐条件读数（放行时放第二行）*/
   readonly conditions?: readonly ConditionOutcome[];
 }
@@ -553,9 +555,10 @@ export function formatStatusLine(breaker: Breaker, subject?: StatusSubject): str
   if (subject === undefined) return "jev-suite ok";
 
   const outcome = subject.kind === "allow" ? "放行" : "拦下";
-  // Jev 判的落点（模型 · 读数 · 耗时）全部放第二行，首行不重复它们
-  const where = subject.layer === "jev" ? "" : ` · ${whereOf(subject)}`;
-  return `jev-suite ${outcome} ${subject.tool}${where}`;
+  // 首行 = 结论 + 工具 + 被判定对象（命令或路径，已脱敏与截断）
+  const what =
+    subject.summary === undefined || subject.summary.length === 0 ? "" : ` · ${subject.summary}`;
+  return `jev-suite ${outcome} ${subject.tool}${what}`;
 }
 
 export function formatReadings(conditions: readonly ConditionOutcome[]): string {
@@ -587,16 +590,12 @@ export function statusLines(breaker: Breaker, subject?: StatusSubject): string[]
   const head = formatStatusLine(breaker, subject);
   if (subject === undefined || breaker.state() !== "ok") return [head];
 
-  // 证据行只在**真的判过**时给：单纯一个 0ms 不是证据而是噪音（快路径不该凭空多一行）
-  const judged = subject.model !== undefined || subject.conditions !== undefined;
-  const evidence: string[] = [];
-  if (judged) {
-    if (subject.model !== undefined) evidence.push(subject.model);
-    if (subject.conditions !== undefined) evidence.push(formatReadings(subject.conditions));
-    if (subject.latencyMs !== undefined) evidence.push(`${subject.latencyMs}ms`);
-  }
+  // 第二行 = 判定经过：落点（Jev 时就是模型名）· 读数 · 耗时。三种情形形状一致，所以不用分支。
+  const trail: string[] = [whereOf(subject)];
+  if (subject.conditions !== undefined) trail.push(formatReadings(subject.conditions));
+  if (subject.latencyMs !== undefined) trail.push(`${subject.latencyMs}ms`);
 
-  const lines = evidence.length === 0 ? [head] : [head, `  ${evidence.join(" · ")}`];
+  const lines = [head, `  ${trail.join(" · ")}`];
   const reason = subject.reason?.trim() ?? "";
   if (subject.kind === "block" && reason.length > 0) lines.push(`  ${reason.slice(0, 140)}`);
   return lines;
@@ -656,6 +655,8 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
         kind: verdict.kind,
         layer: verdict.layer,
         reason: verdict.reason,
+        // 首行要显示被判定对象；widget 只有一行宽，所以截到 80 字符（日志里那份是 200）
+        summary: summariseCall(event.toolName, event.input, 80),
         ...(verdict.model === undefined ? {} : { model: verdict.model }),
         ...(verdict.latencyMs === undefined ? {} : { latencyMs: verdict.latencyMs }),
         ...(verdict.judgment === undefined ? {} : { conditions: verdict.judgment.conditions }),
