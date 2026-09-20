@@ -22,7 +22,6 @@ import {
   writeStoredApiKey,
 } from "./src/jev.ts";
 import { Breaker, type ExtensionApiLike, type GateContextLike, registerGate } from "./src/gate.ts";
-import { type ToolApiLike, registerTools } from "./src/tools.ts";
 
 export interface CommandApiLike {
   registerCommand(
@@ -183,7 +182,7 @@ export function formatRecentDecisions(records: readonly JevJsonObject[], limit =
 
 // ---------------------------------------------------------------- entry
 
-export default function piJevSuite(pi: ExtensionApiLike & ToolApiLike & CommandApiLike): void {
+export default function piJevSuite(pi: ExtensionApiLike & CommandApiLike): void {
   const agentDir = process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
   const breaker = new Breaker({ breakerAfter: 3, cooldownMs: 60_000 });
 
@@ -200,11 +199,14 @@ export default function piJevSuite(pi: ExtensionApiLike & ToolApiLike & CommandA
   const configNow = (): SuiteConfig => currentConfig ?? loadFor({ cwd: process.cwd(), trusted: false });
 
   /**
-   * Each consumer resolves its own access mode: `gate.provider` / `tools.provider` override the global one.
-   * The merge is field-level — when an override only sets a preset, timeout and the rest still come from the global config.
+   * The gate's access mode. `gate.provider` overrides the global one field by field — when an
+   * override only sets a preset, the timeout and the rest still come from the global config.
+   *
+   * The package used to route two extra consumers (jev_evaluate, ask_advisor) to their own
+   * endpoint; they were removed as dead weight, so the gate is the only consumer left.
    */
-  const clientFor = (config: SuiteConfig, which: "gate" | "tools"): JevClient | null => {
-    const override = which === "gate" ? config.gate.provider : config.tools.provider;
+  const makeClient = (config: SuiteConfig): JevClient | null => {
+    const override = config.gate.provider;
     const provider = resolveProvider(override === undefined ? config.provider : { ...config.provider, ...override });
     const key = resolveApiKey(agentDir, provider.protocol);
     if (key === null) return null;
@@ -224,15 +226,8 @@ export default function piJevSuite(pi: ExtensionApiLike & ToolApiLike & CommandA
     agentDir,
     breaker,
     loadConfig: (ctx) => loadFor(ctx),
-    makeClient: (config) => clientFor(config, "gate"),
+    makeClient,
     exemptPaths: exemptPaths(agentDir),
-  });
-
-  registerTools(pi, {
-    makeClient: () => {
-      const config = configNow();
-      return config.tools.enabled ? clientFor(config, "tools") : null;
-    },
   });
 
   pi.registerCommand(COMMAND_NAME, {

@@ -66,21 +66,21 @@ test("no config files -> defaults, no warnings", () => {
   assert.equal(r.projectPath, null);
 });
 
-test("the global config applies and the two access methods can each override", () => {
+test("the global config applies, and the gate can override the access method", () => {
   const { agentDir, cwd } = scaffold();
   writeFileSync(
     join(agentDir, "pi-jev-suite.json"),
     JSON.stringify({
-      provider: { preset: "gateway", timeoutMs: 3000 },
+      provider: { preset: "typesafe", timeoutMs: 3000 },
       gate: { provider: { preset: "gateway" }, records: "status", allow: ["ls *"] },
+      // a leftover `tools` block from when jev_evaluate and ask_advisor existed
       tools: { provider: { preset: "typesafe" } },
     }),
   );
   const r = loadConfig({ agentDir, cwd, trusted: true });
-  assert.deepEqual(r.warnings, []);
-  assert.equal(resolveProvider(r.config.provider).baseUrl, "https://gateway.invalid");
-  assert.equal(resolveProvider(r.config.gate.provider).protocol, "decisions", "the gate uses the gateway");
-  assert.equal(resolveProvider(r.config.tools.provider).protocol, "systemone", "the tools use the official API");
+  assert.deepEqual(r.warnings, [], "a leftover tools block is simply not read any more, and is not an error");
+  assert.equal(resolveProvider(r.config.provider).baseUrl, "https://api.typesafe.ai");
+  assert.equal(resolveProvider(r.config.gate.provider).protocol, "decisions", "the gate overrides to the gateway");
   assert.deepEqual(r.config.gate.allow, ["ls *"]);
 });
 

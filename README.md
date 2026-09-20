@@ -1,14 +1,10 @@
 # pi-jev-suite
 
-The single place in pi where **Jev** (TypeSafe's System One decision model) is used. One core, three consumers:
-
-| consumer | what it does |
-| --- | --- |
-| **gate** | judges every `bash` / `write` / `edit` call before it runs |
-| **`jev_evaluate`** | lets the agent ask Jev for calibrated yes/no probabilities |
-| **`ask_advisor`** | a second opinion on the work in progress |
+The single place in pi where **Jev** (TypeSafe's System One decision model) is used: one core and one consumer — a permission gate that judges every `bash` / `write` / `edit` call before it runs.
 
 Jev returns **numbers, not prose**: one probability per question, plus the model name and token counts.
+
+Two earlier consumers, `jev_evaluate` and `ask_advisor`, were removed. They were thin wrappers over the same call, had never been invoked in live use, and cost a permanent entry in every prompt's tool list; asking Jev a question the agent could answer itself is not worth that.
 
 ## How a call is judged
 
@@ -19,15 +15,15 @@ Jev returns **numbers, not prose**: one probability per question, plus the model
 3. Jev            one question: should this call be allowed?
 ```
 
-Layer 0 is not configurable and is checked on the raw text before anything else. Layers 1 and 2 cost nothing (no network). Layer 3 asks exactly one question — **should this call be allowed to run** — and the model is told that all three of these must hold:
+Layer 0 is not configurable and is checked on the raw text before anything else. Layers 1 and 2 cost nothing (no network). Layer 3 asks exactly one question — **should this call be allowed to run** — and the considerations it weighs are **ranked**, not merely conjoined:
 
-1. it is part of what the user is working on, or a routine step of work they already set in motion;
-2. it sends nothing secret or credential-bearing anywhere, and does not read a credential file into the conversation;
-3. it cannot destroy something that is hard or impossible to undo.
+1. **Authorisation.** A direct, specific instruction in `latest_user_message` is decisive: the call is allowed even when it is otherwise risky or hard to undo — a user asking for a git history rewrite is authorisation, not a reason to refuse. Without such an instruction the call must still fit the work in `user_intent`, or be a routine step of it.
+2. **Credentials.** A call that sends secrets anywhere, or reads a credential file into the conversation, is refused — and an instruction does **not** override it; only a human pausing the gate can.
+3. **Irreversibility** — data outside its target, uncommitted work, repository history — weighs rather than vetoes: it lowers the probability for a call nobody asked for, and does not block one the user explicitly asked for.
 
 Allowed when `p >= thresholds.allow` (default `0.6`). Everything else — including "unclear" and "no answer" — is blocked: **silence is never consent.**
 
-The user's most recent message travels separately as `latest_user_message`: the intent window is a conversation, and a direct instruction about the call being judged is what authorises a risky action - it should not have to be inferred from a dozen earlier messages. A blocked call then gets exactly one follow-up question (unauthorised, credential risk, or irreversible risk), so the block message names the reason instead of leaving three different next moves to guess from.
+The newest user message travels separately as `latest_user_message`, because the intent window alone is a conversation rather than an instruction. A blocked call then gets exactly one follow-up question — unauthorised, credential risk, or irreversible risk — so the block message names the reason instead of leaving three different next moves to guess from.
 
 Three details matter more than they look:
 
@@ -66,7 +62,7 @@ Global `~/.pi/agent/pi-jev-suite.json`, project `<cwd>/.pi/pi-jev-suite.json` (o
 }
 ```
 
-Presets: `typesafe` (official `/v1/systemone`), `gateway` and `openrouter` (the decisions contract at `/api/alpha/decisions`). The two protocols differ only in URL, key verification and model id — the request and response bodies are the same JSON, so one parser serves both. A **consumer** may override the provider (`gate.provider`, `tools.provider`), which is how the gate can bill one account and the tools another.
+Presets: `typesafe` (official `/v1/systemone`), `gateway` and `openrouter` (the decisions contract at `/api/alpha/decisions`). The two protocols differ only in URL, key verification and model id — the request and response bodies are the same JSON, so one parser serves both. `gate.provider` may override the global provider field by field, which is how the gate can bill a different account than the global default.
 
 Invalid values are dropped with a warning rather than silently defaulted; a missing field keeps its default (absent is not the same as wrong).
 
@@ -114,7 +110,7 @@ The single-question form of layer 3 followed from the same measurement: the mode
 
 ```bash
 node --test --experimental-strip-types test/chain.test.ts test/policy.test.ts test/config.test.ts \
-  test/jev.test.ts test/gate.test.ts test/tools.test.ts test/intent.test.ts test/rtk-compat.test.ts test/status.test.ts
+  test/jev.test.ts test/gate.test.ts test/intent.test.ts test/rtk-compat.test.ts test/status.test.ts test/authorization.test.ts
 node_modules/.bin/tsc --noEmit -p tsconfig.json
 ```
 

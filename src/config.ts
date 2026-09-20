@@ -78,12 +78,6 @@ export interface GateConfig {
   protectedPaths: string[];
 }
 
-export interface ToolsConfig {
-  provider?: ProviderConfig;
-  /** Whether jev_evaluate / ask_advisor are enabled */
-  enabled: boolean;
-}
-
 export interface Thresholds {
   /** Allow threshold: the model's "should allow" probability must be >= this to pass, otherwise deny (including when unclear). */
   allow: number;
@@ -105,7 +99,6 @@ export interface SuiteConfig {
   provider: ProviderConfig;
   budget: Budget;
   gate: GateConfig;
-  tools: ToolsConfig;
   thresholds: Thresholds;
   onUnavailable: OnUnavailable;
 }
@@ -124,7 +117,6 @@ export const DEFAULT_CONFIG: SuiteConfig = {
     transparentWrappers: ["rtk"],
     protectedPaths: [],
   },
-  tools: { enabled: true },
   /**
    * Only allow what the model **clearly thinks should be allowed**: one probability, one threshold.
    *
@@ -369,7 +361,6 @@ export function loadConfig(opts: LoadOptions): LoadResult {
 
   const defaults = DEFAULT_CONFIG;
   const gateRaw = isPlainObject(raw.gate) ? raw.gate : {};
-  const toolsRaw = isPlainObject(raw.tools) ? raw.tools : {};
   const budgetRaw = isPlainObject(raw.budget) ? raw.budget : {};
   const thrRaw = isPlainObject(raw.thresholds) ? raw.thresholds : {};
   const unavRaw = isPlainObject(raw.onUnavailable) ? raw.onUnavailable : {};
@@ -409,10 +400,6 @@ export function loadConfig(opts: LoadOptions): LoadResult {
         warnings,
       ),
       protectedPaths: coercePatterns(gateRaw.protectedPaths, "gate.protectedPaths", warnings),
-    },
-    tools: {
-      enabled: coerceBool(toolsRaw.enabled, "tools.enabled", warnings, defaults.tools.enabled),
-      provider: coerceProvider(toolsRaw.provider, "tools.provider", warnings),
     },
     thresholds: {
       allow: coerceThreshold(thrRaw.allow, "thresholds.allow", warnings, defaults.thresholds.allow),
