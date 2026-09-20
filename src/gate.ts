@@ -376,6 +376,8 @@ export interface GateVerdict {
   readonly reason: string;
   /** 为什么走到这一层（第③层时就是 matched_policy_reasons）—— 日志里必须有，否则出事查不下去 */
   readonly policyReasons?: readonly string[];
+  /** 实际作答的模型（走了 Jev 才有）；状态行要显示它，否则「判没判、谁判的」看不出来 */
+  readonly model?: string;
   readonly judgment?: Judgment;
   readonly latencyMs?: number;
 }
@@ -491,6 +493,7 @@ export async function evaluateToolCall(
     layer: "jev",
     reason: judgment.reason,
     policyReasons: reasons,
+    model: result.model,
     judgment,
     latencyMs: result.latencyMs,
   };
@@ -536,14 +539,38 @@ export interface GateWiring {
   readonly now?: () => number;
 }
 
-function statusText(breaker: Breaker): string {
+export interface StatusSubject {
+  readonly tool: string;
+  readonly kind: "allow" | "block";
+  readonly layer: VerdictLayer;
+  readonly model?: string;
+  readonly latencyMs?: number;
+}
+
+/**
+ * 状态行：常驻在输入框上方的一行，显示**最近一次**判定的结果。
+ *
+ * 放行与拦下都显示 —— 否则「这条命令它到底看没看」只能靠猜（旧行为只在拦下时有反馈）。
+ * 走了 Jev 就带上模型名（「谁判的」和「判了什么」一样重要）。
+ * 降级 / 暂停优先：这两种状态比单次结果更重要。
+ */
+export function formatStatusLine(breaker: Breaker, subject?: StatusSubject): string {
   const state = breaker.state();
   if (state === "paused") {
-    const minutes = Math.ceil(breaker.pauseRemainingMs() / 60_000);
-    return `jev-suite PAUSED ${minutes}m`;
+    return `jev-suite PAUSED ${Math.ceil(breaker.pauseRemainingMs() / 60_000)}m`;
   }
-  if (state === "degraded") return "jev-suite DEGRADED";
-  return "jev-suite ok";
+  if (state === "degraded") return "jev-suite DEGRADED（Jev 不可用，只放行只读与白名单）";
+  if (subject === undefined) return "jev-suite ok";
+
+  const outcome = subject.kind === "allow" ? "放行" : "拦下";
+  const where =
+    subject.layer === "readonly"
+      ? "快路径"
+      : subject.layer === "config"
+        ? "白名单"
+        : (subject.model ?? subject.layer);
+  const latency = subject.latencyMs === undefined ? "" : ` ${subject.latencyMs}ms`;
+  return `jev-suite ${outcome} ${subject.tool} · ${where}${latency}`;
 }
 
 /**
@@ -590,12 +617,22 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
 
     const verdict = await evaluateToolCall(event.toolName, event.input, deps);
 
-    if (config.gate.records !== "off") {
-      ctx.ui?.setStatus?.("jev-suite", statusText(wiring.breaker));
-    }
-
-    // 不在门禁范围的工具不记录：这是判定日志，不是工具调用流水
+    // 不在门禁范围的工具不记录、也不动状态行：这是判定日志，不是工具调用流水
     if (!isGatedTool(event.toolName)) return undefined;
+
+    // **放行也刷**：否则「这条命令它到底看没看」只能靠猜
+    if (config.gate.records !== "off") {
+      ctx.ui?.setStatus?.(
+        "jev-suite",
+        formatStatusLine(wiring.breaker, {
+          tool: event.toolName,
+          kind: verdict.kind,
+          layer: verdict.layer,
+          ...(verdict.model === undefined ? {} : { model: verdict.model }),
+          ...(verdict.latencyMs === undefined ? {} : { latencyMs: verdict.latencyMs }),
+        }),
+      );
+    }
 
     const record: DecisionLogRecord = {
       kind: "decision",
