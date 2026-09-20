@@ -508,6 +508,8 @@ export interface ToolCallEventLike {
 
 export interface GateUiLike {
   setStatus?(key: string, text: string | undefined): void;
+  /** 默认位置就是**编辑器上方**（传 `{placement: "belowEditor"}` 才是下方）—— 这正是「输入框上面常驻」要用的那个 */
+  setWidget?(key: string, content: string[] | undefined, options?: { placement?: string }): void;
   notify?(message: string, level?: string): void;
   input?(title: string, placeholder?: string): Promise<string | undefined>;
 }
@@ -545,6 +547,8 @@ export interface StatusSubject {
   readonly layer: VerdictLayer;
   readonly model?: string;
   readonly latencyMs?: number;
+  /** 判定理由：首行放不下时放第二行 */
+  readonly reason?: string;
 }
 
 /**
@@ -571,6 +575,19 @@ export function formatStatusLine(breaker: Breaker, subject?: StatusSubject): str
         : (subject.model ?? subject.layer);
   const latency = subject.latencyMs === undefined ? "" : ` ${subject.latencyMs}ms`;
   return `jev-suite ${outcome} ${subject.tool} · ${where}${latency}`;
+}
+
+/**
+ * 给 widget 的行：首行是结果，第二行是理由。
+ *
+ * 理由只在真的走了 Jev 且确实有理由时给（快路径没什么可解释的）；
+ * 降级 / 暂停只给一行 —— 那两种状态本身就是全部信息。
+ */
+export function statusLines(breaker: Breaker, subject?: StatusSubject): string[] {
+  const head = formatStatusLine(breaker, subject);
+  if (subject === undefined || breaker.state() !== "ok") return [head];
+  const reason = subject.reason?.trim() ?? "";
+  return reason.length === 0 ? [head] : [head, `  ${reason.slice(0, 120)}`];
 }
 
 /**
@@ -622,16 +639,20 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
 
     // **放行也刷**：否则「这条命令它到底看没看」只能靠猜
     if (config.gate.records !== "off") {
-      ctx.ui?.setStatus?.(
-        "jev-suite",
-        formatStatusLine(wiring.breaker, {
-          tool: event.toolName,
-          kind: verdict.kind,
-          layer: verdict.layer,
-          ...(verdict.model === undefined ? {} : { model: verdict.model }),
-          ...(verdict.latencyMs === undefined ? {} : { latencyMs: verdict.latencyMs }),
-        }),
-      );
+      const lines = statusLines(wiring.breaker, {
+        tool: event.toolName,
+        kind: verdict.kind,
+        layer: verdict.layer,
+        reason: verdict.reason,
+        ...(verdict.model === undefined ? {} : { model: verdict.model }),
+        ...(verdict.latencyMs === undefined ? {} : { latencyMs: verdict.latencyMs }),
+      });
+      // widget 默认就在编辑器上方 —— 那正是「输入框上面常驻」的位置；setStatus 仅作兜底
+      if (typeof ctx.ui?.setWidget === "function") {
+        ctx.ui.setWidget("jev-suite", lines);
+      } else {
+        ctx.ui?.setStatus?.("jev-suite", lines.join("  "));
+      }
     }
 
     const record: DecisionLogRecord = {
