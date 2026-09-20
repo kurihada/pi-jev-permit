@@ -28,11 +28,6 @@
     "transparentWrappers": ["rtk"],
     "protectedPaths": ["/etc/", "~/.ssh/", "~/.aws/"]
   },
-  "tools": {
-    "provider": {
-      "preset": "typesafe"
-    }
-  },
   "onUnavailable": {
     "mode": "degraded",
     "breakerAfter": 3,

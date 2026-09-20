@@ -59,7 +59,6 @@ Global `~/.pi/agent/pi-jev-suite.json`, project `<cwd>/.pi/pi-jev-suite.json` (o
     "transparentWrappers": ["rtk"],
     "protectedPaths": ["/etc/", "~/.ssh/"]
   },
-  "tools": { "provider": { "preset": "typesafe" } },
   "thresholds": { "allow": 0.6 },
   "onUnavailable": { "mode": "degraded", "breakerAfter": 3, "cooldownMs": 60000 }
 }
