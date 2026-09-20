@@ -1,15 +1,35 @@
 {
   "name": "pi-jev-permit",
-  "version": "0.0.1",
-  "private": true,
-  "description": "The single Jev (TypeSafe System One) surface for the Pi coding agent: permission gate, jev_evaluate tool, advisor second opinion",
+  "version": "0.1.0",
+  "description": "A Jev (TypeSafe System One) permission gate for the Pi coding agent: it judges every bash / write / edit call before it runs, behind a config allow/deny floor and a local read-only fast path.",
   "license": "MIT",
   "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "jev",
+    "typesafe",
+    "permission",
+    "approval",
+    "gate",
+    "security"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kurihada/pi-jev-permit.git"
+  },
+  "homepage": "https://github.com/kurihada/pi-jev-permit#readme",
+  "bugs": {
+    "url": "https://github.com/kurihada/pi-jev-permit/issues"
+  },
+  "files": [
+    "index.ts",
+    "src",
+    "config.example.json"
+  ],
   "engines": {
     "node": ">=22.19.0"
-  },
-  "dependencies": {
-    "typebox": "^1.3.34"
   },
   "pi": {
     "extensions": [
@@ -17,7 +37,7 @@
     ]
   },
   "scripts": {
-    "test": "node --test --experimental-strip-types test/",
+    "test": "node --test --experimental-strip-types test/chain.test.ts test/policy.test.ts test/config.test.ts test/jev.test.ts test/gate.test.ts test/intent.test.ts test/rtk-compat.test.ts test/status.test.ts test/authorization.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
@@ -30,7 +50,6 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
-    "typebox": "^1.3.34",
     "typescript": "^7.0.2"
   }
 }
