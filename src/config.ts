@@ -37,6 +37,12 @@ export const PRESETS = {
 export type PresetName = keyof typeof PRESETS;
 export const PRESET_NAMES = Object.keys(PRESETS) as PresetName[];
 
+/** 每种协议在各自默认端点上的 model 名（验证 key 这种拿不到配置的场景用） */
+export const DEFAULT_MODEL_BY_PROTOCOL: Record<Protocol, string> = {
+  systemone: PRESETS.typesafe.model,
+  decisions: PRESETS.gateway.model,
+};
+
 export interface ProviderConfig {
   preset?: PresetName;
   protocol?: Protocol;
