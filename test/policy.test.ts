@@ -60,7 +60,7 @@ test("not hard-denied: target has a variable but a literal path (fixes upstream'
   // normal in-project deletion
   assert.equal(kind("rm -rf build"), "ask");
   assert.equal(kind("rm -rf ./dist .next"), "ask");
-  assert.equal(kind("rm -rf /Users/xd/pi-lab/pi-jev-suite/PLAN.md"), "ask");
+  assert.equal(kind("rm -rf /Users/xd/pi-lab/pi-jev-permit/PLAN.md"), "ask");
 });
 
 test("hard deny: other irreversible shapes", () => {
@@ -122,7 +122,7 @@ test("read-only: explicitly excluded shapes", () => {
     ["printenv", "not in the read-only list"],
     ["cat ~/.ssh/id_rsa", "credential file"],
     ["grep token ~/.aws/credentials", "credential file"],
-    ["cat /Users/xd/.pi/agent/secrets/pi-jev-suite-decisions-api-key", "credential file"],
+    ["cat /Users/xd/.pi/agent/secrets/pi-jev-permit-decisions-api-key", "credential file"],
     ["cat $FILE", "unresolved variable"],
     ["uname > f.txt", "redirect"],
     ["ls -la > /tmp/out.txt", "redirect"],

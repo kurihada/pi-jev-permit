@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { DEFAULT_CONFIG, PRESETS, loadConfig, mergeObjects, resolveProvider } from "../src/config.ts";
 
 function scaffold(): { agentDir: string; cwd: string } {
-  const root = mkdtempSync(join(tmpdir(), "pi-jev-suite-"));
+  const root = mkdtempSync(join(tmpdir(), "pi-jev-permit-"));
   const agentDir = join(root, "agent");
   const cwd = join(root, "project");
   mkdirSync(agentDir, { recursive: true });
@@ -69,7 +69,7 @@ test("no config files -> defaults, no warnings", () => {
 test("the global config applies, and the gate can override the access method", () => {
   const { agentDir, cwd } = scaffold();
   writeFileSync(
-    join(agentDir, "pi-jev-suite.json"),
+    join(agentDir, "pi-jev-permit.json"),
     JSON.stringify({
       provider: { preset: "typesafe", timeoutMs: 3000 },
       gate: { provider: { preset: "gateway" }, records: "status", allow: ["ls *"] },
@@ -87,7 +87,7 @@ test("the global config applies, and the gate can override the access method", (
 test("an invalid value only affects itself and produces a warning", () => {
   const { agentDir, cwd } = scaffold();
   writeFileSync(
-    join(agentDir, "pi-jev-suite.json"),
+    join(agentDir, "pi-jev-permit.json"),
     JSON.stringify({
       provider: { preset: "nope", timeoutMs: 999999 },
       gate: { records: "yes", allow: ["ls *", 42, ""], deny: "sudo *" },
@@ -109,11 +109,11 @@ test("an invalid value only affects itself and produces a warning", () => {
 test("the project config applies only when trusted", () => {
   const { agentDir, cwd } = scaffold();
   writeFileSync(
-    join(agentDir, "pi-jev-suite.json"),
+    join(agentDir, "pi-jev-permit.json"),
     JSON.stringify({ gate: { records: "off", transparentWrappers: ["rtk"] } }),
   );
   writeFileSync(
-    join(cwd, ".pi", "pi-jev-suite.json"),
+    join(cwd, ".pi", "pi-jev-permit.json"),
     JSON.stringify({ gate: { records: "full", transparentWrappers: [] } }),
   );
 
@@ -124,12 +124,12 @@ test("the project config applies only when trusted", () => {
   const trusted = loadConfig({ agentDir, cwd, trusted: true });
   assert.equal(trusted.config.gate.records, "full", "trusted -> deep merge, project overrides global");
   assert.deepEqual(trusted.config.gate.transparentWrappers, [], "arrays replace whole");
-  assert.equal(trusted.projectPath, join(cwd, ".pi", "pi-jev-suite.json"));
+  assert.equal(trusted.projectPath, join(cwd, ".pi", "pi-jev-permit.json"));
 });
 
 test("bad JSON only produces a warning and leaves other config alone", () => {
   const { agentDir, cwd } = scaffold();
-  writeFileSync(join(cwd, ".pi", "pi-jev-suite.json"), "{ not json");
+  writeFileSync(join(cwd, ".pi", "pi-jev-permit.json"), "{ not json");
   const r = loadConfig({ agentDir, cwd, trusted: true });
   assert.equal(r.warnings.length, 1);
   assert.match(r.warnings[0]!, /JSON parse failed/);
@@ -138,7 +138,7 @@ test("bad JSON only produces a warning and leaves other config alone", () => {
 
 test("the threshold has a lower bound: below 0.5 is rejected and falls back", () => {
   const { agentDir, cwd } = scaffold();
-  writeFileSync(join(agentDir, "pi-jev-suite.json"), JSON.stringify({ thresholds: { allow: 0.2 } }));
+  writeFileSync(join(agentDir, "pi-jev-permit.json"), JSON.stringify({ thresholds: { allow: 0.2 } }));
   const r = loadConfig({ agentDir, cwd, trusted: true });
   assert.equal(r.config.thresholds.allow, DEFAULT_CONFIG.thresholds.allow);
   assert.match(r.warnings.join("\n"), /0\.5 < threshold/);

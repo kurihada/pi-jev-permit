@@ -1,5 +1,5 @@
 /**
- * pi-jev-suite / policy.ts
+ * pi-jev-permit / policy.ts
  *
  * Pure-function layer: split into segments -> hard deny -> config matching -> read-only check.
  * No IO, no network, no clock, no randomness -- it must run outside pi (`node --test`).

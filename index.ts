@@ -1,5 +1,5 @@
 /**
- * pi-jev-suite — the single Jev surface in pi.
+ * pi-jev-permit — the single Jev surface in pi.
  *
  * The entry point does exactly three things: load config, build a client per protocol,
  * and register the three consumers plus one command into pi.
@@ -7,7 +7,7 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type ResolvedProvider, type SuiteConfig, loadConfig, resolveProvider } from "./src/config.ts";
+import { type ResolvedProvider, type PermitConfig, loadConfig, resolveProvider } from "./src/config.ts";
 import {
   type JevClient,
   type JevJson,
@@ -33,9 +33,9 @@ export interface CommandApiLike {
   ): void;
 }
 
-export const COMMAND_NAME = "jev-suite";
+export const COMMAND_NAME = "jev-permit";
 
-export const USAGE = "Usage: /jev-suite login | pause [30m] | resume | stats | explain | reload";
+export const USAGE = "Usage: /jev-permit login | pause [30m] | resume | stats | explain | reload";
 
 /** `30m` / `2h` / `45` (no unit means minutes). Falls back when it cannot be parsed. */
 export function parseDurationMs(text: string, fallbackMs = 30 * 60_000): number {
@@ -51,11 +51,11 @@ export function parseDurationMs(text: string, fallbackMs = 30 * 60_000): number 
 /**
  * This package's own config and logs: writing them must not be judged by the gate
  * (otherwise the agent cannot edit its own config again).
- * The secrets directory is NOT included — credentials are written by `/jev-suite login`,
+ * The secrets directory is NOT included — credentials are written by `/jev-permit login`,
  * which is a command, not a tool call.
  */
 export function exemptPaths(agentDir: string): string[] {
-  return [join(agentDir, "pi-jev-suite")];
+  return [join(agentDir, "pi-jev-permit")];
 }
 
 // ---------------------------------------------------------------- reports
@@ -182,21 +182,21 @@ export function formatRecentDecisions(records: readonly JevJsonObject[], limit =
 
 // ---------------------------------------------------------------- entry
 
-export default function piJevSuite(pi: ExtensionApiLike & CommandApiLike): void {
+export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void {
   const agentDir = process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
   const breaker = new Breaker({ breakerAfter: 3, cooldownMs: 60_000 });
 
-  let currentConfig: SuiteConfig | null = null;
+  let currentConfig: PermitConfig | null = null;
   let lastWarnings: string[] = [];
 
-  const loadFor = (ctx: { cwd: string; trusted: boolean }): SuiteConfig => {
+  const loadFor = (ctx: { cwd: string; trusted: boolean }): PermitConfig => {
     const result = loadConfig({ agentDir, cwd: ctx.cwd, trusted: ctx.trusted });
     currentConfig = result.config;
     lastWarnings = result.warnings;
     return result.config;
   };
 
-  const configNow = (): SuiteConfig => currentConfig ?? loadFor({ cwd: process.cwd(), trusted: false });
+  const configNow = (): PermitConfig => currentConfig ?? loadFor({ cwd: process.cwd(), trusted: false });
 
   /**
    * The gate's access mode. `gate.provider` overrides the global one field by field — when an
@@ -205,7 +205,7 @@ export default function piJevSuite(pi: ExtensionApiLike & CommandApiLike): void 
    * The package used to route two extra consumers (jev_evaluate, ask_advisor) to their own
    * endpoint; they were removed as dead weight, so the gate is the only consumer left.
    */
-  const makeClient = (config: SuiteConfig): JevClient | null => {
+  const makeClient = (config: PermitConfig): JevClient | null => {
     const override = config.gate.provider;
     const provider = resolveProvider(override === undefined ? config.provider : { ...config.provider, ...override });
     const key = resolveApiKey(agentDir, provider.protocol);
@@ -231,7 +231,7 @@ export default function piJevSuite(pi: ExtensionApiLike & CommandApiLike): void 
   });
 
   pi.registerCommand(COMMAND_NAME, {
-    description: "Manage pi-jev-suite: login / pause / resume / stats / explain / reload",
+    description: "Manage pi-jev-permit: login / pause / resume / stats / explain / reload",
     handler: async (args, ctx) => {
       const notify = (message: string, level: "info" | "warning" | "error" = "info"): void => {
         ctx.ui?.notify?.(message, level);
@@ -291,7 +291,7 @@ export default function piJevSuite(pi: ExtensionApiLike & CommandApiLike): void 
         case "pause": {
           const ms = parseDurationMs(rest[0] ?? "");
           breaker.pause(ms);
-          ctx.ui?.setStatus?.("jev-suite", `jev-suite PAUSED ${Math.ceil(ms / 60_000)}m`);
+          ctx.ui?.setStatus?.("jev-permit", `jev-permit PAUSED ${Math.ceil(ms / 60_000)}m`);
           notify(
             `Judgment paused for ${Math.ceil(ms / 60_000)} minutes: all calls pass, and it resumes automatically (better than turning the gate off, because you cannot forget to turn it back on)`,
             "warning",

@@ -1,5 +1,5 @@
 {
-  "name": "pi-jev-suite",
+  "name": "pi-jev-permit",
   "version": "0.0.1",
   "private": true,
   "description": "The single Jev (TypeSafe System One) surface for the Pi coding agent: permission gate, jev_evaluate tool, advisor second opinion",

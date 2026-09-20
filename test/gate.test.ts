@@ -196,9 +196,9 @@ test("protected paths: credentials, repo metadata, agent instruction files", () 
 });
 
 test("protected paths: an exempt prefix always passes (otherwise you can't even edit your own config)", () => {
-  const config = "/Users/xd/.pi/agent/pi-jev-suite.json";
+  const config = "/Users/xd/.pi/agent/pi-jev-permit.json";
   assert.notEqual(protectedPathReason(config), null, "the .pi segment is protected by default");
-  assert.equal(protectedPathReason(config, [], ["/Users/xd/.pi/agent/pi-jev-suite"]), null);
+  assert.equal(protectedPathReason(config, [], ["/Users/xd/.pi/agent/pi-jev-permit"]), null);
 });
 
 test("protected paths: extra config patterns (substring or glob)", () => {
@@ -400,8 +400,8 @@ test("end-to-end: this package's own config is writable (exempt)", async () => {
   const f = fakeClient(okResult());
   const v = await evaluateToolCall(
     "write",
-    { path: "/Users/xd/.pi/agent/pi-jev-suite.json", content: "{}" },
-    deps({ client: f.client, exemptPaths: ["/Users/xd/.pi/agent/pi-jev-suite"] }),
+    { path: "/Users/xd/.pi/agent/pi-jev-permit.json", content: "{}" },
+    deps({ client: f.client, exemptPaths: ["/Users/xd/.pi/agent/pi-jev-permit"] }),
   );
   assert.equal(v.kind, "allow");
   assert.equal(f.calls.length, 0);

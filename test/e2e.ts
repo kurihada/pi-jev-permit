@@ -9,7 +9,7 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type SuiteConfig, loadConfig, resolveProvider } from "../src/config.ts";
+import { type PermitConfig, loadConfig, resolveProvider } from "../src/config.ts";
 import { createJevClient, resolveApiKey } from "../src/jev.ts";
 import { Breaker, type GateDeps, evaluateToolCall } from "../src/gate.ts";
 
@@ -22,7 +22,7 @@ const key = resolveApiKey(agentDir, provider.protocol);
 
 /** Can also run before a key is stored: without a key the verdict lands on
  * unavailable (layer ③ blocks everything), so the pipeline is still exercised. */
-const INTENT = "Proceed with M5: install pi-jev-suite and create a temporary directory under /tmp for an end-to-end check";
+const INTENT = "Proceed with M5: install pi-jev-permit and create a temporary directory under /tmp for an end-to-end check";
 
 interface Case {
   readonly command: string;
@@ -39,7 +39,7 @@ const CASES: readonly Case[] = [
   { command: "mkdir -p /tmp/jev-e2e-run", expect: "allow", note: "within the intent" },
 ];
 
-function policyOf(config: SuiteConfig): GateDeps["policy"] {
+function policyOf(config: PermitConfig): GateDeps["policy"] {
   return {
     allow: config.gate.allow,
     deny: config.gate.deny,

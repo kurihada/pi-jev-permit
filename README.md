@@ -1,4 +1,4 @@
-# pi-jev-suite
+# pi-jev-permit
 
 The single place in pi where **Jev** (TypeSafe's System One decision model) is used: one core and one consumer — a permission gate that judges every `bash` / `write` / `edit` call before it runs.
 
@@ -33,9 +33,9 @@ Three details matter more than they look:
 ## The widget above the input box
 
 ```text
-jev-suite allow bash · ls -la /tmp        <- verdict + tool + the call being judged
+jev-permit allow bash · ls -la /tmp        <- verdict + tool + the call being judged
   fast path · 0ms                          <- how it was decided (route/model · reading · latency)
-jev-suite deny bash · npm publish
+jev-permit deny bash · npm publish
   typesafe/jev-1.13 · allow 0.04 · 792ms
   not clearly allowed (p=0.04 < 0.6)       <- only when blocked
 ```
@@ -44,7 +44,7 @@ The command text is redacted and truncated to 80 characters before it is display
 
 ## Configuration
 
-Global `~/.pi/agent/pi-jev-suite.json`, project `<cwd>/.pi/pi-jev-suite.json` (only for a trusted project). Changes take effect on the next judgment; `/jev-suite reload` re-reads and reports warnings.
+Global `~/.pi/agent/pi-jev-permit.json`, project `<cwd>/.pi/pi-jev-permit.json` (only for a trusted project). Changes take effect on the next judgment; `/jev-permit reload` re-reads and reports warnings.
 
 ```jsonc
 {
@@ -70,20 +70,20 @@ Invalid values are dropped with a warning rather than silently defaulted; a miss
 
 | command | what it does |
 | --- | --- |
-| `/jev-suite login [systemone\|decisions]` | verifies a key against the endpoint the gate actually uses, then stores it `0600` in that protocol's own slot |
-| `/jev-suite pause [30m]` | allows everything until the deadline, then recovers by itself |
-| `/jev-suite resume` | ends a pause |
-| `/jev-suite stats` | usage plus, per condition, how often it was satisfied / rejected / unclear |
-| `/jev-suite explain` | the last few decisions: command, layer, reason, readings |
-| `/jev-suite reload` | re-reads the config and reports warnings |
+| `/jev-permit login [systemone\|decisions]` | verifies a key against the endpoint the gate actually uses, then stores it `0600` in that protocol's own slot |
+| `/jev-permit pause [30m]` | allows everything until the deadline, then recovers by itself |
+| `/jev-permit resume` | ends a pause |
+| `/jev-permit stats` | usage plus, per condition, how often it was satisfied / rejected / unclear |
+| `/jev-permit explain` | the last few decisions: command, layer, reason, readings |
+| `/jev-permit reload` | re-reads the config and reports warnings |
 
 ## When Jev is unavailable
 
 | state | layers 1–2 | layer 3 | widget |
 | --- | --- | --- | --- |
 | `ok` | normal | asks Jev | the last verdict |
-| `degraded` | **still pass** | blocked, with the reason | `jev-suite DEGRADED` |
-| `paused` | pass | pass | `jev-suite PAUSED 30m` |
+| `degraded` | **still pass** | blocked, with the reason | `jev-permit DEGRADED` |
+| `paused` | pass | pass | `jev-permit PAUSED 30m` |
 
 After three consecutive failures the gate degrades: the model layer blocks, but the read-only fast path and your allow rules keep working, so a broken key or a dead endpoint does not stop ordinary work. A failed judgment is **never** treated as approval.
 

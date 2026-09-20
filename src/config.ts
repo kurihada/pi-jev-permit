@@ -1,5 +1,5 @@
 /**
- * pi-jev-suite / config.ts
+ * pi-jev-permit / config.ts
  *
  * Config schema + presets + load / merge / validate.
  *
@@ -94,7 +94,7 @@ export interface Budget {
   usdPerDay: number;
 }
 
-export interface SuiteConfig {
+export interface PermitConfig {
   enabled: boolean;
   provider: ProviderConfig;
   budget: Budget;
@@ -105,7 +105,7 @@ export interface SuiteConfig {
 
 // ---------------------------------------------------------------- defaults
 
-export const DEFAULT_CONFIG: SuiteConfig = {
+export const DEFAULT_CONFIG: PermitConfig = {
   enabled: true,
   provider: { preset: "typesafe", timeoutMs: 4000, maxRetries: 1 },
   budget: { requestsPerDay: 2000, usdPerDay: 1.0 },
@@ -123,7 +123,7 @@ export const DEFAULT_CONFIG: SuiteConfig = {
    * 0.6 is the measured starting point: asking the single question "is this consistent with what
    * the user is working on" gave 0.77–0.98 when covered and 0.06–0.15 when not. Now that three
    * considerations are folded into one question, the boundary sits a bit more toward the middle,
-   * so during the observation window use `/jev-suite stats` to read the distribution before
+   * so during the observation window use `/jev-permit stats` to read the distribution before
    * retuning (it is the only knob).
    */
   thresholds: {
@@ -146,7 +146,7 @@ export const LIMITS = {
 } as const;
 
 export interface LoadResult {
-  config: SuiteConfig;
+  config: PermitConfig;
   /** The effective global config path */
   globalPath: string;
   /** The effective project config path (null when not trusted) */
@@ -343,8 +343,8 @@ export interface LoadOptions {
  */
 export function loadConfig(opts: LoadOptions): LoadResult {
   const warnings: string[] = [];
-  const globalPath = join(opts.agentDir, "pi-jev-suite.json");
-  const projectPath = join(opts.cwd, ".pi", "pi-jev-suite.json");
+  const globalPath = join(opts.agentDir, "pi-jev-permit.json");
+  const projectPath = join(opts.cwd, ".pi", "pi-jev-permit.json");
 
   let raw: JsonObject = {};
   const globalRaw = readJson(globalPath, warnings);
@@ -365,7 +365,7 @@ export function loadConfig(opts: LoadOptions): LoadResult {
   const thrRaw = isPlainObject(raw.thresholds) ? raw.thresholds : {};
   const unavRaw = isPlainObject(raw.onUnavailable) ? raw.onUnavailable : {};
 
-  const config: SuiteConfig = {
+  const config: PermitConfig = {
     enabled: coerceBool(raw.enabled, "enabled", warnings, defaults.enabled),
     provider: coerceProvider(raw.provider, "provider", warnings) ?? { ...defaults.provider },
     budget: {

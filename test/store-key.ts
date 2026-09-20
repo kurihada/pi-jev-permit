@@ -1,11 +1,11 @@
 /**
  * Store a key from the environment into this package's key slot — the
- * non-interactive equivalent of `/jev-suite login`.
+ * non-interactive equivalent of `/jev-permit login`.
  *
  * Usage:
  *   node --experimental-strip-types test/store-key.ts [systemone|decisions]
  *
- * The key is read from `PI_JEV_SUITE_API_KEY`, falling back to `TAPSVC_LLM_KEY`
+ * The key is read from `PI_JEV_PERMIT_API_KEY`, falling back to `TAPSVC_LLM_KEY`
  * (the company gateway key).
  * **Verify before storing**: if verification fails nothing is written, so a
  * typo never becomes "everything gets blocked".
@@ -32,9 +32,9 @@ if (chosen === undefined) {
   process.exit(2);
 }
 
-const key = process.env.PI_JEV_SUITE_API_KEY?.trim() || process.env.TAPSVC_LLM_KEY?.trim();
+const key = process.env.PI_JEV_PERMIT_API_KEY?.trim() || process.env.TAPSVC_LLM_KEY?.trim();
 if (key === undefined || key.length === 0) {
-  console.error("neither PI_JEV_SUITE_API_KEY nor TAPSVC_LLM_KEY is set in the environment");
+  console.error("neither PI_JEV_PERMIT_API_KEY nor TAPSVC_LLM_KEY is set in the environment");
   process.exit(2);
 }
 

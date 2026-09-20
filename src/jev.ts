@@ -1,5 +1,5 @@
 /**
- * pi-jev-suite / jev.ts — core: the **single** place that makes network requests.
+ * pi-jev-permit / jev.ts — core: the **single** place that makes network requests.
  *
  * Both access methods share one parser (the response bodies have the same shape):
  *   - `systemone`  -> `POST {baseUrl}/v1/systemone` (official TypeSafe)
@@ -194,11 +194,11 @@ export const SECRET_FILE_MODE = 0o600;
 
 /** **One slot per protocol**: the official key and the gateway key never overwrite each other (today the gateway key was almost sent to the official endpoint) */
 export function credentialPath(agentDir: string, protocol: Protocol): string {
-  return join(agentDir, "secrets", `pi-jev-suite-${protocol}-api-key`);
+  return join(agentDir, "secrets", `pi-jev-permit-${protocol}-api-key`);
 }
 
 /**
- * The `PI_JEV_SUITE_API_KEY` environment variable overrides the key for the current protocol.
+ * The `PI_JEV_PERMIT_API_KEY` environment variable overrides the key for the current protocol.
  * **Deliberately not reusing `TYPESAFE_API_KEY`** — other packages read it too.
  */
 export function resolveApiKey(
@@ -206,7 +206,7 @@ export function resolveApiKey(
   protocol: Protocol,
   env: Record<string, string | undefined> = process.env,
 ): { key: string; source: "env" | "stored" } | null {
-  const fromEnv = env.PI_JEV_SUITE_API_KEY;
+  const fromEnv = env.PI_JEV_PERMIT_API_KEY;
   if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
     return { key: fromEnv.trim(), source: "env" };
   }
@@ -256,7 +256,7 @@ export const EMPTY_USAGE = (date: string): UsageRecord => ({
 });
 
 export function usagePath(agentDir: string): string {
-  return join(agentDir, "pi-jev-suite-usage.json");
+  return join(agentDir, "pi-jev-permit-usage.json");
 }
 
 /** The counter resets by **UTC date** (simple and predictable; a local-timezone day boundary shifts as you travel) */
@@ -338,7 +338,7 @@ export interface DecisionLogRecord {
 export type LogRecord = AskLogRecord | DecisionLogRecord;
 
 export function logPath(agentDir: string): string {
-  return join(agentDir, "pi-jev-suite-log.jsonl");
+  return join(agentDir, "pi-jev-permit-log.jsonl");
 }
 
 /** A log write failure must not affect the judgment */

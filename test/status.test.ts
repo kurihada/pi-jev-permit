@@ -2,9 +2,9 @@
  * Status display: the widget that sits permanently just above the input box.
  *
  * ```
- * jev-suite allow bash · ls -la /tmp        ← line 1: verdict + tool + the call being judged
+ * jev-permit allow bash · ls -la /tmp        ← line 1: verdict + tool + the call being judged
  *   fast path · 0ms                         ← line 2: how it was decided (route/model · reading · time)
- * jev-suite deny bash · npm publish
+ * jev-permit deny bash · npm publish
  *   typesafe/jev-1.13 · allow 0.04 · 792ms
  *   not clearly allowed (p=0.04 < 0.6)      ← line 3, only when blocked
  * ```
@@ -34,7 +34,7 @@ const REJECTED: readonly ConditionOutcome[] = [
 test("line 1: verdict + tool + the call being judged (both allow and deny)", () => {
   assert.equal(
     formatStatusLine(breaker(), { tool: "bash", kind: "allow", layer: "readonly", summary: "ls -la /tmp" }),
-    "jev-suite allow bash · ls -la /tmp",
+    "jev-permit allow bash · ls -la /tmp",
   );
   assert.equal(
     formatStatusLine(breaker(), {
@@ -43,10 +43,10 @@ test("line 1: verdict + tool + the call being judged (both allow and deny)", () 
       layer: "harddeny",
       summary: "/Users/xd/.pi/agent/settings.json",
     }),
-    "jev-suite deny write · /Users/xd/.pi/agent/settings.json",
+    "jev-permit deny write · /Users/xd/.pi/agent/settings.json",
   );
   // no summary -> no dangling separator
-  assert.equal(formatStatusLine(breaker(), { tool: "bash", kind: "allow", layer: "config" }), "jev-suite allow bash");
+  assert.equal(formatStatusLine(breaker(), { tool: "bash", kind: "allow", layer: "config" }), "jev-permit allow bash");
 });
 
 test("summariseCall: redacted, flattened, truncated (the widget copy caps at 80)", () => {
@@ -68,11 +68,11 @@ test("line 2: route/model · reading · latency, same shape in all three cases",
   // fast path: decided locally, so no model and no reading
   assert.deepEqual(
     statusLines(breaker(), { tool: "bash", kind: "allow", layer: "readonly", summary: "ls", latencyMs: 0 }),
-    ["jev-suite allow bash · ls", "  fast path · 0ms"],
+    ["jev-permit allow bash · ls", "  fast path · 0ms"],
   );
   // allowlist: the config layer has no latency
   assert.deepEqual(statusLines(breaker(), { tool: "write", kind: "allow", layer: "config", summary: "src/a.ts" }), [
-    "jev-suite allow write · src/a.ts",
+    "jev-permit allow write · src/a.ts",
     "  allowlist",
   ]);
   // Jev: the model name replaces the route label
@@ -87,7 +87,7 @@ test("line 2: route/model · reading · latency, same shape in all three cases",
       conditions: ALLOWED,
       reason: "allowed (p=0.94 >= 0.6)",
     }),
-    ["jev-suite allow bash · npm install", "  typesafe/jev-1.13 · allow 0.94 · 830ms"],
+    ["jev-permit allow bash · npm install", "  typesafe/jev-1.13 · allow 0.94 · 830ms"],
     "an allow never spends a line on the reason (it only restates the reading)",
   );
 });
@@ -105,7 +105,7 @@ test("line 3: the reason, only when blocked", () => {
       reason: "not clearly allowed (p=0.04 < 0.6)",
     }),
     [
-      "jev-suite deny bash · npm publish",
+      "jev-permit deny bash · npm publish",
       "  typesafe/jev-1.13 · allow 0.04 · 792ms",
       "  not clearly allowed (p=0.04 < 0.6)",
     ],
@@ -120,7 +120,7 @@ test("line 3: the reason, only when blocked", () => {
       summary: "rm -rf /",
       reason: "recursive delete of a root directory: /",
     }),
-    ["jev-suite deny bash · rm -rf /", "  hard deny", "  recursive delete of a root directory: /"],
+    ["jev-permit deny bash · rm -rf /", "  hard deny", "  recursive delete of a root directory: /"],
   );
 
   // a deny-rule block lands on the config layer
@@ -132,7 +132,7 @@ test("line 3: the reason, only when blocked", () => {
       summary: "sudo ls",
       reason: "matched deny: sudo *",
     }),
-    ["jev-suite deny bash · sudo ls", "  deny rule", "  matched deny: sudo *"],
+    ["jev-permit deny bash · sudo ls", "  deny rule", "  matched deny: sudo *"],
   );
 });
 
@@ -175,9 +175,9 @@ test("degraded and paused win over a single verdict, and take a single line", ()
 
   const paused = breaker();
   paused.pause(30 * 60_000);
-  assert.deepEqual(statusLines(paused), ["jev-suite PAUSED 30m"]);
+  assert.deepEqual(statusLines(paused), ["jev-permit PAUSED 30m"]);
 });
 
 test("nothing judged yet: just ok", () => {
-  assert.deepEqual(statusLines(breaker()), ["jev-suite ok"]);
+  assert.deepEqual(statusLines(breaker()), ["jev-permit ok"]);
 });

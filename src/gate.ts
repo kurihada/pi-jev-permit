@@ -1,5 +1,5 @@
 /**
- * pi-jev-suite / gate.ts — consumer 1: the permission gate.
+ * pi-jev-permit / gate.ts — consumer 1: the permission gate.
  *
  * Wires policy.ts's pipeline and jev.ts's core onto pi's `tool_call`.
  *
@@ -7,7 +7,7 @@
  * on pi's types, so it can be unit-tested with a fake client — no pi, no network.
  */
 import { isAbsolute, relative, resolve } from "node:path";
-import type { SuiteConfig, Thresholds } from "./config.ts";
+import type { PermitConfig, Thresholds } from "./config.ts";
 import {
   DEFAULT_CRITERIA,
   type DecisionLogRecord,
@@ -640,10 +640,10 @@ export interface ExtensionApiLike {
 }
 
 export interface GateWiring {
-  /** Re-reads the config (including the project layer) on every decision — `/jev-suite reload` just surfaces the warnings. */
-  readonly loadConfig: (ctx: { readonly cwd: string; readonly trusted: boolean }) => SuiteConfig;
+  /** Re-reads the config (including the project layer) on every decision — `/jev-permit reload` just surfaces the warnings. */
+  readonly loadConfig: (ctx: { readonly cwd: string; readonly trusted: boolean }) => PermitConfig;
   /** Builds a client from the config; returns null when there is no key. */
-  readonly makeClient: (config: SuiteConfig) => JevClient | null;
+  readonly makeClient: (config: PermitConfig) => JevClient | null;
   readonly breaker: Breaker;
   readonly agentDir: string;
   readonly isGitRepository?: boolean;
@@ -697,16 +697,16 @@ function whereOf(subject: StatusSubject): string {
 export function formatStatusLine(breaker: Breaker, subject?: StatusSubject): string {
   const state = breaker.state();
   if (state === "paused") {
-    return `jev-suite PAUSED ${Math.ceil(breaker.pauseRemainingMs() / 60_000)}m`;
+    return `jev-permit PAUSED ${Math.ceil(breaker.pauseRemainingMs() / 60_000)}m`;
   }
-  if (state === "degraded") return "jev-suite DEGRADED (Jev unavailable — only fast-path and allowlisted calls pass)";
-  if (subject === undefined) return "jev-suite ok";
+  if (state === "degraded") return "jev-permit DEGRADED (Jev unavailable — only fast-path and allowlisted calls pass)";
+  if (subject === undefined) return "jev-permit ok";
 
   const outcome = subject.kind === "allow" ? "allow" : "deny";
   // Line 1 = verdict + tool + the object being judged (the command or path, already redacted and truncated)
   const what =
     subject.summary === undefined || subject.summary.length === 0 ? "" : ` · ${subject.summary}`;
-  return `jev-suite ${outcome} ${subject.tool}${what}`;
+  return `jev-permit ${outcome} ${subject.tool}${what}`;
 }
 
 export function formatReadings(conditions: readonly ConditionOutcome[]): string {
@@ -728,7 +728,7 @@ export function formatReadings(conditions: readonly ConditionOutcome[]): string 
  * The widget's lines:
  *
  * ```
- * jev-suite allow bash                     ← line 1: the verdict
+ * jev-permit allow bash                     ← line 1: the verdict
  *   typesafe/jev-1.13 · allow 0.94 · 830ms ← line 2: the evidence (model · reading · latency)
  *   not clearly allowed (p=0.04 < 0.6)     ← only when blocked, one more line
  * ```
@@ -819,9 +819,9 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
       });
       // The widget sits above the editor by default — that is the "persistent line above the input box" spot; setStatus is only a fallback
       if (typeof ctx.ui?.setWidget === "function") {
-        ctx.ui.setWidget("jev-suite", lines);
+        ctx.ui.setWidget("jev-permit", lines);
       } else {
-        ctx.ui?.setStatus?.("jev-suite", lines.join("  "));
+        ctx.ui?.setStatus?.("jev-permit", lines.join("  "));
       }
     }
 
@@ -851,18 +851,18 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
     appendLog(wiring.agentDir, record);
 
     if (config.gate.records === "full") {
-      pi.appendEntry?.("jev-suite-decision", record);
+      pi.appendEntry?.("jev-permit-decision", record);
     }
 
     if (verdict.kind === "block") {
       return {
         block: true,
-        reason: `pi-jev-suite blocked this call: ${verdict.reason}. Do not retry it unchanged — change the approach or ask the user.`,
+        reason: `pi-jev-permit blocked this call: ${verdict.reason}. Do not retry it unchanged — change the approach or ask the user.`,
       };
     }
     return undefined;
   });
 }
 
-/** Exposed to `/jev-suite explain` and to the tests. */
+/** Exposed to `/jev-permit explain` and to the tests. */
 export const decisionLogPath = logPath;

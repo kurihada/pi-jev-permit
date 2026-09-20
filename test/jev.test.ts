@@ -29,7 +29,7 @@ import {
 // ---------------------------------------------------------------- Scaffolding
 
 function tempAgent(): string {
-  return mkdtempSync(join(tmpdir(), "pi-jev-suite-core-"));
+  return mkdtempSync(join(tmpdir(), "pi-jev-permit-core-"));
 }
 
 interface Call {
@@ -313,7 +313,7 @@ test("keys are slotted per protocol, env overrides the current protocol, other p
   assert.equal(readStoredApiKey(dir, "decisions")?.key, "gateway-key");
 
   assert.deepEqual(resolveApiKey(dir, "systemone", {}), { key: "official-key", source: "stored" });
-  assert.deepEqual(resolveApiKey(dir, "systemone", { PI_JEV_SUITE_API_KEY: "env-key" }), {
+  assert.deepEqual(resolveApiKey(dir, "systemone", { PI_JEV_PERMIT_API_KEY: "env-key" }), {
     key: "env-key",
     source: "env",
   });
