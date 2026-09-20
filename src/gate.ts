@@ -1,10 +1,10 @@
 /**
- * pi-jev-suite / gate.ts —— 消费方 1：门禁
+ * pi-jev-suite / gate.ts — consumer 1: the permission gate.
  *
- * 把 policy.ts 的流水线与 jev.ts 的 core 接到 pi 的 `tool_call` 上。
+ * Wires policy.ts's pipeline and jev.ts's core onto pi's `tool_call`.
  *
- * 判定逻辑（combine / Breaker / evaluateToolCall）全部导出、且不依赖 pi 的类型 ——
- * 所以能用假 client 单测，不需要起 pi、不需要联网。
+ * The decision logic (combine / Breaker / evaluateToolCall) is all exported and does not depend
+ * on pi's types, so it can be unit-tested with a fake client — no pi, no network.
  */
 import { isAbsolute, relative, resolve } from "node:path";
 import type { SuiteConfig, Thresholds } from "./config.ts";
@@ -27,7 +27,7 @@ export function isGatedTool(name: string): name is GatedTool {
   return (GATED_TOOLS as readonly string[]).includes(name);
 }
 
-// ---------------------------------------------------------------- 意图
+// ---------------------------------------------------------------- Intent
 
 export interface IntentOptions {
   readonly maxMessages: number;
@@ -36,20 +36,21 @@ export interface IntentOptions {
 }
 
 export const DEFAULT_INTENT_OPTIONS: IntentOptions = {
-  // 窗口放宽一点，让"进行中的任务当初那条请求"还在里面。意图只占请求的几个百分点。
+  // A wide window, so the original request behind an ongoing task is still in it. The intent is
+  // only a few percent of the request payload.
   maxMessages: 12,
   maxMessageChars: 1200,
   maxTotalChars: 6000,
 };
 
-/** 上下文里没有用户请求时的占位文本 —— 不能让空串被读成"用户没要求所以随意" */
+/** Placeholder for when there is no user request in context — an empty string must not read as "the user asked for nothing, so anything goes". */
 export const NO_INTENT_PLACEHOLDER = "(no user request is in context)";
 
 function truncate(value: string, maxLength: number): string {
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
-/** 把 pi 的消息 content 拍平成纯文本 */
+/** Flatten a pi message content value into plain text. */
 export function messageText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -62,11 +63,13 @@ export function messageText(content: unknown): string {
 }
 
 /**
- * 最近若干轮**用户**发言，从旧到新拼成一段。
+ * The most recent few **user** turns, oldest first, joined into one block.
  *
- * 只取 user 角色：assistant 文本与工具输出里都有文件内容与命令输出，让它们参与
- * "用户想要什么"的判断，等于让仓库内容替自己辩护。
- * 带 customType 的消息是扩展注入的上下文（plan mode 之类），不是用户说的话。
+ * Only the user role is kept: assistant text and tool output both contain file contents and
+ * command output, so letting them shape "what the user wanted" would let repository content
+ * argue for its own approval.
+ * Messages carrying a customType are extension-injected context (plan mode and similar), not
+ * user speech.
  */
 export function extractRecentIntent(
   branch: readonly unknown[],
@@ -87,11 +90,13 @@ export function extractRecentIntent(
     if (text) collected.push(text);
   }
 
-  // 超预算时丢**最旧的**整条消息，永远保留最新那条。
+  // When over budget, drop the **oldest** whole messages and always keep the newest.
   //
-  // 原来是 truncate(整串) —— join 之后是从旧到新，从头截等于保留最旧、丢掉最新，
-  // 于是一场长对话里最近的授权会被裁掉，Jev 看到的是很早以前的旧话题：
-  // 「用户刚刚说授权跑验证」却被判成 p=0.23 没有覆盖。（上游 intent.ts 同样的问题）
+  // The original code truncated the whole joined string — after the join it is oldest-first, so
+  // truncating from the front kept the oldest and dropped the newest. In a long conversation the
+  // most recent authorization was therefore cut off, leaving Jev staring at stale, unrelated
+  // topics: "the user just said go run the verification" was judged p=0.23, not covered.
+  // (The upstream intent.ts has the same bug.)
   const messages = collected.reverse();
   let total = messages.reduce((sum, text) => sum + text.length + 2, 0);
   let start = 0;
@@ -102,16 +107,17 @@ export function extractRecentIntent(
   return messages.slice(start).join("\n\n");
 }
 
-// ---------------------------------------------------------------- 条件与组合
+// ---------------------------------------------------------------- Conditions and combination
 
 export type RuleKind = "required" | "forbidden";
 
 export interface GateRule {
   readonly id: string;
   /**
-   * `required`：必须明确满足才放行（真正的权限问题）。
-   * `forbidden`：明确否定就拦；中间地带忽略（"没有危害"这类问题永远落 0.75–0.98，
-   *   拿它当必需项会把每次调用都变成确认）。
+   * `required`: must be clearly satisfied before the call is allowed (the real permission
+   *   question).
+   * `forbidden`: only a clear negative blocks; the middle band is ignored ("no hazard" questions
+   *   cluster 0.75–0.98, so making them required would turn every call into a confirmation).
    */
   readonly kind: RuleKind;
   readonly thresholdKey: keyof Thresholds;
@@ -164,10 +170,12 @@ export interface Judgment {
 }
 
 /**
- * 一个问题、一个阈值：**明确认为该放行**（p ≥ 阈值）才放，否则拦。
+ * One question, one threshold: allow only when the model **clearly thinks it should be allowed**
+ * (p ≥ threshold); otherwise block.
  *
- * 三件事被折进了同一个提问里（在用户正在做的任务内 / 不带凭据出去 / 不造成不可逆损害），
- * 所以这里不再分档：一个概率定生死，仍然是 fail-closed —— 说不清就是不放。
+ * The three considerations are folded into that single question (within the user's current task
+ * / no credential egress / no irreversible damage), so there is no banding here: one probability
+ * decides, and it is still fail-closed — unclear means block.
  */
 export function combine(answers: Record<string, number>, thresholds: Thresholds): Judgment {
   const rule = GATE_RULES[0]!;
@@ -196,7 +204,7 @@ export function combine(answers: Record<string, number>, thresholds: Thresholds)
   };
 }
 
-// ---------------------------------------------------------------- 状态构造
+// ---------------------------------------------------------------- State construction
 
 export interface GateStateInput {
   readonly tool: GatedTool;
@@ -215,7 +223,8 @@ export interface GateStateContext {
 }
 
 /**
- * 交给 Jev 的状态。**只放路径与脱敏后的命令文本**，绝不放文件内容、diff 或工具输出。
+ * The state handed to Jev. **Only the path and the redacted command text go out** — never file
+ * contents, diffs, or tool output.
  */
 export function buildGateState(input: GateStateInput, context: GateStateContext): JevState {
   return {
@@ -235,7 +244,7 @@ export function buildGateState(input: GateStateInput, context: GateStateContext)
   };
 }
 
-// ---------------------------------------------------------------- 写入目标
+// ---------------------------------------------------------------- Write target
 
 export interface WriteTarget {
   readonly absolutePath: string;
@@ -257,7 +266,7 @@ function editCountOf(input: Record<string, unknown>): number {
   return Array.isArray(input.edits) ? input.edits.length : 0;
 }
 
-// ---------------------------------------------------------------- 断路器
+// ---------------------------------------------------------------- Circuit breaker
 
 export type BreakerState = "ok" | "degraded" | "paused";
 
@@ -268,10 +277,13 @@ export interface BreakerOptions {
 }
 
 /**
- * `ok` — 正常判定。
- * `degraded` — 连续失败到达阈值且冷却未过：**第 ③ 层一律拦**，但第 ①② 层（只读与白名单）
- *   根本不经过这里，所以 Jev 挂掉时日常仍然能跑（旧方案连 `ls` 都跑不了就是这个原因）。
- * `paused` — 显式暂停，全部放行，到期自动恢复（比"关掉门禁"好：不会忘了开回来）。
+ * `ok` — normal judging.
+ * `degraded` — consecutive failures reached the threshold and the cooldown has not elapsed:
+ *   **layer ③ blocks everything**, but layers ①② (read-only and the allowlist) never reach
+ *   here, so everyday work still runs when Jev is down (the old gate couldn't even run `ls`,
+ *   which is why this exists).
+ * `paused` — explicitly paused; everything passes and it auto-resumes when the timer expires
+ *   (better than "turning the gate off": you can't forget to turn it back on).
  */
 export class Breaker {
   #failures = 0;
@@ -294,7 +306,7 @@ export class Breaker {
     if (this.#failures >= this.#options.breakerAfter && now - this.#lastFailureAt < this.#options.cooldownMs) {
       return "degraded";
     }
-    // 冷却已过 → 下一次调用就是探测：成功清零，失败重新降级
+    // Cooldown elapsed → the next call is a probe: success resets, failure re-degrades
     return "ok";
   }
 
@@ -330,7 +342,7 @@ export class Breaker {
   }
 }
 
-// ---------------------------------------------------------------- 端到端判定
+// ---------------------------------------------------------------- End-to-end decision
 
 export type VerdictLayer = "config" | "readonly" | "harddeny" | "jev" | "unavailable" | "degraded" | "paused";
 
@@ -338,9 +350,9 @@ export interface GateVerdict {
   readonly kind: "allow" | "block";
   readonly layer: VerdictLayer;
   readonly reason: string;
-  /** 为什么走到这一层（第③层时就是 matched_policy_reasons）—— 日志里必须有，否则出事查不下去 */
+  /** Why it reached this layer (at layer ③ this is the matched_policy_reasons) — must be in the log, otherwise an incident is untraceable. */
   readonly policyReasons?: readonly string[];
-  /** 实际作答的模型（走了 Jev 才有）；状态行要显示它，否则「判没判、谁判的」看不出来 */
+  /** The model that actually answered (only present when Jev ran); the status line shows it, otherwise "was it judged, and by whom" is invisible. */
   readonly model?: string;
   readonly judgment?: Judgment;
   readonly latencyMs?: number;
@@ -351,12 +363,12 @@ export interface GateDeps {
   readonly policy: BashPolicy;
   readonly protectedPaths: readonly string[];
   readonly thresholds: Thresholds;
-  /** null = 没有 key；此时第 ③ 层一律拦，第 ①② 层不受影响 */
+  /** null = no key; layer ③ blocks everything while layers ①② are unaffected. */
   readonly client: JevClient | null;
   readonly breaker: Breaker;
   readonly intent: string;
   readonly isGitRepository: boolean;
-  /** 本包自己的配置文件与日志：写它们不该被判定 */
+  /** This package's own config file and log: writing them should not be judged. */
   readonly exemptPaths?: readonly string[];
   readonly now?: () => number;
 }
@@ -367,7 +379,7 @@ export async function evaluateToolCall(
   deps: GateDeps,
 ): Promise<GateVerdict> {
   if (!isGatedTool(toolName)) {
-    return { kind: "allow", layer: "config", reason: "不在门禁范围" };
+    return { kind: "allow", layer: "config", reason: "not a gated tool" };
   }
 
   let operation: string;
@@ -468,7 +480,7 @@ export async function evaluateToolCall(
   };
 }
 
-// ---------------------------------------------------------------- pi 接线
+// ---------------------------------------------------------------- pi wiring
 
 export interface ToolCallEventLike {
   readonly toolName: string;
@@ -477,7 +489,7 @@ export interface ToolCallEventLike {
 
 export interface GateUiLike {
   setStatus?(key: string, text: string | undefined): void;
-  /** 默认位置就是**编辑器上方**（传 `{placement: "belowEditor"}` 才是下方）—— 这正是「输入框上面常驻」要用的那个 */
+  /** Default placement is **above the editor** (pass `{placement: "belowEditor"}` for below) — this is the "persistent line above the input box" API. */
   setWidget?(key: string, content: string[] | undefined, options?: { placement?: string }): void;
   notify?(message: string, level?: string): void;
   input?(title: string, placeholder?: string): Promise<string | undefined>;
@@ -499,9 +511,9 @@ export interface ExtensionApiLike {
 }
 
 export interface GateWiring {
-  /** 每次判定都重新取配置（含项目层）—— `/jev-suite reload` 只是把 warning 报出来 */
+  /** Re-reads the config (including the project layer) on every decision — `/jev-suite reload` just surfaces the warnings. */
   readonly loadConfig: (ctx: { readonly cwd: string; readonly trusted: boolean }) => SuiteConfig;
-  /** 按配置构造 client；没有 key 时返回 null */
+  /** Builds a client from the config; returns null when there is no key. */
   readonly makeClient: (config: SuiteConfig) => JevClient | null;
   readonly breaker: Breaker;
   readonly agentDir: string;
@@ -516,21 +528,14 @@ export interface StatusSubject {
   readonly layer: VerdictLayer;
   readonly model?: string;
   readonly latencyMs?: number;
-  /** 判定理由（拦下时放最后一行：带 p 与阈值，直接说明为什么）*/
+  /** The verdict reason (the last line when blocked: carries p and the threshold, explaining directly why). */
   readonly reason?: string;
-  /** 被判定对象：脱敏 + 压平 + 截断后的命令或路径（首行显示）*/
+  /** The object being judged: the redacted + flattened + truncated command or path (shown on line 1). */
   readonly summary?: string;
-  /** 走了 Jev 时的逐条件读数（放行时放第二行）*/
+  /** Per-condition readings when Jev ran (line 2 when allowed). */
   readonly conditions?: readonly ConditionOutcome[];
 }
 
-/**
- * 状态行：常驻在输入框上方的一行，显示**最近一次**判定的结果。
- *
- * 放行与拦下都显示 —— 否则「这条命令它到底看没看」只能靠猜（旧行为只在拦下时有反馈）。
- * 走了 Jev 就带上模型名（「谁判的」和「判了什么」一样重要）。
- * 降级 / 暂停优先：这两种状态比单次结果更重要。
- */
 /** Layer labels for the status line; `jev` is absent on purpose — it shows the **model name** instead. */
 const LAYER_LABELS: Readonly<Record<string, string>> = {
   readonly: "fast path",
@@ -541,10 +546,11 @@ const LAYER_LABELS: Readonly<Record<string, string>> = {
 };
 
 /**
- * 「落在哪里」：
- * - `config` 层两种结果不同 —— 放行是被 allow 白名单放行，拦下是命中了 deny 规则（以前两者都写「白名单」，拦下时是错的）
- * - `jev` 层显示模型名（谁判的）
- * - 其余层用中文短标签，不再把英文层名丢给用户看
+ * "Where it landed":
+ * - the `config` layer means two different things — an allow is an allowlist pass, a block is a
+ *   deny-rule hit (both used to read "allowlist", which was wrong for blocks)
+ * - the `jev` layer shows the model name (who decided)
+ * - the rest use the short labels, never the raw English layer name
  */
 function whereOf(subject: StatusSubject): string {
   if (subject.layer === "config") return subject.kind === "block" ? "deny rule" : "allowlist";
@@ -552,11 +558,12 @@ function whereOf(subject: StatusSubject): string {
 }
 
 /**
- * 状态行：常驻在输入框上方的一行，显示**最近一次**判定的结果。
+ * Status line: the persistent line above the input box, showing the **most recent** verdict.
  *
- * 放行与拦下都显示 —— 否则「这条命令它到底看没看」只能靠猜（旧行为只在拦下时有反馈）。
- * 走了 Jev 就带上模型名（「谁判的」和「判了什么」一样重要）。
- * 降级 / 暂停优先：这两种状态比单次结果更重要。
+ * Both allows and blocks are shown — otherwise "did it even look at this command" is anyone's
+ * guess (the old behaviour only gave feedback on blocks).
+ * When Jev ran, the model name is shown ("who decided" matters as much as "what was decided").
+ * Degraded / paused take priority: those two states matter more than a single verdict.
  */
 export function formatStatusLine(breaker: Breaker, subject?: StatusSubject): string {
   const state = breaker.state();
@@ -567,7 +574,7 @@ export function formatStatusLine(breaker: Breaker, subject?: StatusSubject): str
   if (subject === undefined) return "jev-suite ok";
 
   const outcome = subject.kind === "allow" ? "allow" : "deny";
-  // 首行 = 结论 + 工具 + 被判定对象（命令或路径，已脱敏与截断）
+  // Line 1 = verdict + tool + the object being judged (the command or path, already redacted and truncated)
   const what =
     subject.summary === undefined || subject.summary.length === 0 ? "" : ` · ${subject.summary}`;
   return `jev-suite ${outcome} ${subject.tool}${what}`;
@@ -580,29 +587,32 @@ export function formatReadings(conditions: readonly ConditionOutcome[]): string 
 }
 
 /**
- * 给 widget 的行：首行是结果，第二行是**能让人做判断的东西**。
+ * The widget's lines: line 1 is the result, line 2 is **something a human can act on**.
  *
- * - **拦下** → 理由（带 p 与阈值，直接说明为什么）
- * - **放行** → 三个概率。「条件都通过」这类汇总只是把首行换个说法重复一遍，没有信息量；
- *   真正值得看的是哪条在骑线（例如 egress 0.84 对面阈值 0.85）
- * - 快路径 / 降级 / 暂停 → 只有一行（那几种情形本身就说完了）
+ * - **blocked** → the reason (carries p and the threshold, explaining directly why)
+ * - **allowed** → the probability. "All conditions passed" summaries only restate line 1 and
+ *   carry no information; what is worth seeing is which condition rides the threshold (e.g.
+ *   egress 0.84 against 0.85)
+ * - fast path / degraded / paused → a single line (those states are self-explanatory)
  */
 /**
- * 给 widget 的行：
+ * The widget's lines:
  *
  * ```
- * jev-suite 放行 bash                       ← 首行：结论
- *   typesafe/jev-1.13 · allow 0.94 · 830ms  ← 次行：证据（模型 · 读数 · 耗时）
- *   没有明确认为该放行（p=0.04 < 0.6）      ← 只有拦下时多这一行
+ * jev-suite allow bash                     ← line 1: the verdict
+ *   typesafe/jev-1.13 · allow 0.94 · 830ms ← line 2: the evidence (model · reading · latency)
+ *   not clearly allowed (p=0.04 < 0.6)     ← only when blocked, one more line
  * ```
  *
- * 快路径 / 白名单 / 降级 / 暂停只有一行（它们本身就说完了）；证据行只在真的走了 Jev 时出现。
+ * Fast path / allowlist / degraded / paused take a single line (they are self-explanatory); the
+ * evidence line only appears when Jev actually ran.
  */
 export function statusLines(breaker: Breaker, subject?: StatusSubject): string[] {
   const head = formatStatusLine(breaker, subject);
   if (subject === undefined || breaker.state() !== "ok") return [head];
 
-  // 第二行 = 判定经过：落点（Jev 时就是模型名）· 读数 · 耗时。三种情形形状一致，所以不用分支。
+  // Line 2 = the decision trail: where it landed (the model name when Jev ran) · reading · latency.
+  // All three cases share the same shape, so there is no branching.
   const trail: string[] = [whereOf(subject)];
   if (subject.conditions !== undefined) trail.push(formatReadings(subject.conditions));
   if (subject.latencyMs !== undefined) trail.push(`${subject.latencyMs}ms`);
@@ -614,8 +624,9 @@ export function statusLines(breaker: Breaker, subject?: StatusSubject): string[]
 }
 
 /**
- * 记录里的一段命令/路径（脱敏 + 压平 + 截断）。
- * 日志必须能解释「这条命令为什么被拦」，但也不该把整条命令原样拄一份。
+ * A snippet of the command/path for the record (redacted + flattened + truncated).
+ * The log must be able to explain "why was this command blocked", but it should not copy the
+ * whole command verbatim either.
  */
 export function summariseCall(tool: string, input: Record<string, unknown>, maxChars = 200): string {
   const raw =
@@ -657,23 +668,24 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
 
     const verdict = await evaluateToolCall(event.toolName, event.input, deps);
 
-    // 不在门禁范围的工具不记录、也不动状态行：这是判定日志，不是工具调用流水
+    // Tools outside the gate's scope are neither logged nor touch the status line: this is a
+    // decision log, not a tool-call stream.
     if (!isGatedTool(event.toolName)) return undefined;
 
-    // **放行也刷**：否则「这条命令它到底看没看」只能靠猜
+    // **Refresh on allow too**: otherwise "did it even look at this command" is anyone's guess
     if (config.gate.records !== "off") {
       const lines = statusLines(wiring.breaker, {
         tool: event.toolName,
         kind: verdict.kind,
         layer: verdict.layer,
         reason: verdict.reason,
-        // 首行要显示被判定对象；widget 只有一行宽，所以截到 80 字符（日志里那份是 200）
+        // Line 1 shows the object being judged; the widget is one line wide, so cap at 80 chars (the log copy is 200)
         summary: summariseCall(event.toolName, event.input, 80),
         ...(verdict.model === undefined ? {} : { model: verdict.model }),
         ...(verdict.latencyMs === undefined ? {} : { latencyMs: verdict.latencyMs }),
         ...(verdict.judgment === undefined ? {} : { conditions: verdict.judgment.conditions }),
       });
-      // widget 默认就在编辑器上方 —— 那正是「输入框上面常驻」的位置；setStatus 仅作兜底
+      // The widget sits above the editor by default — that is the "persistent line above the input box" spot; setStatus is only a fallback
       if (typeof ctx.ui?.setWidget === "function") {
         ctx.ui.setWidget("jev-suite", lines);
       } else {
@@ -720,5 +732,5 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
   });
 }
 
-/** 暴露给 `/jev-suite explain` 与测试 */
+/** Exposed to `/jev-suite explain` and to the tests. */
 export const decisionLogPath = logPath;

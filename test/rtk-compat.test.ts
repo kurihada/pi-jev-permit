@@ -1,9 +1,10 @@
 /**
- * 与 pi-rtk-optimizer 的兼容：rtk **不只是给命令加前缀，它会把动词翻译掉**。
+ * Compatibility with pi-rtk-optimizer: rtk does **not just add a prefix, it translates the verb**.
  *
- * 上线实测抓到的：`tail -2 <file>` 被改写成 `rtk read <file>`，
- * 只剥掉 `rtk` 包装器会剩下一个「我从没写过的命令名」→ 判成不在只读表 → 送第③层。
- * 这一类问题（任何重命名命令的扩展）只能在门禁侧吸收，所以这里把几条路径都钉住。
+ * Caught live: `tail -2 <file>` is rewritten to `rtk read <file>`; stripping only the `rtk`
+ * wrapper leaves "a command name we never wrote" -> judged not read-only -> sent to layer 3.
+ * This class of problem (any extension that renames commands) can only be absorbed on the gate
+ * side, so the paths are pinned here.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -13,7 +14,7 @@ const POLICY: BashPolicy = { allow: [], deny: [], extraReadOnly: [], transparent
 
 const wrapped = (command: string): string => `export RTK_DB_PATH='/tmp/history.db'; ${command}`;
 
-test("rtk 包装 + 惰性赋值：整条走只读快路径，不打网络", () => {
+test("rtk wrapper + inert assignment: the whole thing takes the read-only fast path, no network", () => {
   for (const command of [
     "rtk ls -la /tmp",
     "rtk wc -l /tmp/x.log",
@@ -27,22 +28,23 @@ test("rtk 包装 + 惰性赋值：整条走只读快路径，不打网络", () =
   }
 });
 
-test("rtk 的动词翻译不能变成绕过凭据检查的后门", () => {
-  // `read` 同时是 shell 内建与 rtk 给 tail 用的名字 —— 加进只读表就必须同时加进凭据敏感集合
+test("rtk's verb translation must not become a backdoor around the credential check", () => {
+  // `read` is both a shell builtin and rtk's name for tail -- adding it to the read-only list
+  // means adding it to the credential-sensitive set too
   assert.notEqual(readOnlyProblem("read /Users/xd/.ssh/id_rsa"), null);
   assert.notEqual(readOnlyProblem("read /Users/xd/.pi/agent/secrets/x-api-key"), null);
-  assert.notEqual(readOnlyProblem("read $FILE"), null, "参数含未解析变量也不放行");
+  assert.notEqual(readOnlyProblem("read $FILE"), null, "an argument with an unresolved variable is not allowed either");
 
   const result = decideBash(wrapped("rtk read /Users/xd/.ssh/id_rsa"), POLICY);
-  assert.equal(result.decision.kind, "ask", "凭据文件仍然要判定");
+  assert.equal(result.decision.kind, "ask", "a credential file is still judged");
 });
 
-test("rtk 包装的非只读命令仍要判定", () => {
+test("a non-read-only rtk-wrapped command is still judged", () => {
   const result = decideBash(wrapped("rtk rm -rf /tmp/x"), POLICY);
-  assert.equal(result.decision.kind, "ask", "rm 不是只读，仍走第③层");
+  assert.equal(result.decision.kind, "ask", "rm is not read-only, still goes to layer 3");
 });
 
-test("硬拦必须看穿透明包装器（否则 rtk 会削弱到不了的硬拦层）", () => {
+test("hard deny must see through transparent wrappers (otherwise rtk weakens the untouchable hard-deny layer)", () => {
   const result = decideBash(wrapped("rtk rm -rf /"), POLICY);
   assert.equal(result.decision.kind, "deny");
   assert.equal(result.decision.layer, "harddeny");

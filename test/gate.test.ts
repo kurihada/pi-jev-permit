@@ -1,5 +1,6 @@
 /**
- * 门禁：条件组合、断路器、意图提取、保护路径、端到端判定 —— 全部用假 client，不打网络。
+ * The gate: condition combination, breaker, intent extraction, protected paths, end-to-end
+ * decisions — all with a fake client, no network.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -49,7 +50,7 @@ function deps(over: Partial<GateDeps> = {}): GateDeps {
     thresholds: T,
     client: null,
     breaker: new Breaker({ breakerAfter: 3, cooldownMs: 60_000 }),
-    intent: "请把 README 里的命令更新一下",
+    intent: "Update the commands in the README",
     isGitRepository: true,
     ...over,
   };
@@ -57,34 +58,34 @@ function deps(over: Partial<GateDeps> = {}): GateDeps {
 
 // ---------------------------------------------------------------- combine
 
-test("combine：明确认为该放行（p ≥ 阈值）→ 放行", () => {
+test("combine: clearly allowed (p >= threshold) → allow", () => {
   const j = combine({ allow: 0.9 }, T);
   assert.equal(j.allow, true);
   assert.equal(j.decidingRule, "allow");
-  assert.equal(j.conditions.length, 1, "只有一个条件了");
+  assert.equal(j.conditions.length, 1, "there is only one condition now");
 });
 
-test("combine：阈值边界 —— 正好等于算放行，差一点就不放", () => {
+test("combine: threshold boundary — exactly at it allows, just below does not", () => {
   assert.equal(combine({ allow: T.allow }, T).allow, true);
   assert.equal(combine({ allow: T.allow - 0.01 }, T).allow, false);
 });
 
-test("combine：fail-closed —— 说不清就是不放", () => {
+test("combine: fail-closed — unclear means block", () => {
   const muddled = combine({ allow: 0.5 }, T);
   assert.equal(muddled.allow, false);
   assert.match(muddled.reason, /not clearly allowed/);
 
-  // 模型没答这个 key
+  // the model did not answer this key
   const missing = combine({}, T);
   assert.equal(missing.allow, false);
   assert.match(missing.reason, /did not answer/);
 
-  // 非有限值同样不放
+  // non-finite values are also blocked
   assert.equal(combine({ allow: Number.NaN }, T).allow, false);
   assert.equal(combine({ allow: Number.POSITIVE_INFINITY }, T).allow, false);
 });
 
-test("gateQuestions：只有一个问题，且三个考量都写进了那一个提问里", () => {
+test("gateQuestions: exactly one question, with all three considerations folded into it", () => {
   const questions = gateQuestions();
   assert.deepEqual(Object.keys(questions), ["allow"]);
 
@@ -96,81 +97,82 @@ test("gateQuestions：只有一个问题，且三个考量都写进了那一个�
   assert.equal(instructions["judge"], "value");
   assert.equal(instructions["reference"], "context");
 
-  // 推理被折进了同一个提问 —— 漏措任何一个考量，复合判定就会瞎一块
+  // the reasoning is folded into that one question — miss any consideration and the compound
+  // judgement goes blind in one corner
   const text = String(instructions["question"]);
-  assert.match(text, /user_intent/, "要在用户正在做的任务内");
-  assert.match(text, /secret|credential/i, "不能把凭据弄出去");
-  assert.match(text, /undo|destroy/i, "不能造成不可逆损害");
-  assert.match(text, /All three must hold/, "三者都成立才放行");
+  assert.match(text, /user_intent/, "must be within the user's current task");
+  assert.match(text, /secret|credential/i, "must not leak credentials");
+  assert.match(text, /undo|destroy/i, "must not cause irreversible damage");
+  assert.match(text, /All three must hold/, "all three must hold before allowing");
 });
 
-// ---------------------------------------------------------------- 断路器
+// ---------------------------------------------------------------- Breaker
 
-test("断路器：连续失败到达阈值 → 降级；冷却过后重新探测", () => {
+test("breaker: consecutive failures reach the threshold → degraded; re-probe after the cooldown", () => {
   let nowMs = 1_000_000;
   const breaker = new Breaker({ breakerAfter: 3, cooldownMs: 60_000, now: () => nowMs });
   assert.equal(breaker.state(), "ok");
-  breaker.recordFailure("连不上");
-  breaker.recordFailure("连不上");
-  assert.equal(breaker.state(), "ok", "两次还不够");
-  breaker.recordFailure("连不上");
+  breaker.recordFailure("unreachable");
+  breaker.recordFailure("unreachable");
+  assert.equal(breaker.state(), "ok", "two is not enough");
+  breaker.recordFailure("unreachable");
   assert.equal(breaker.state(), "degraded");
-  assert.equal(breaker.lastReason, "连不上");
+  assert.equal(breaker.lastReason, "unreachable");
 
   nowMs += 60_001;
-  assert.equal(breaker.state(), "ok", "冷却过后放行一次当作探测");
+  assert.equal(breaker.state(), "ok", "after the cooldown, allow once as a probe");
   breaker.recordSuccess();
   assert.equal(breaker.failures, 0);
 });
 
-test("断路器：成功会清零连续失败计数", () => {
+test("breaker: a success resets the consecutive-failure count", () => {
   const breaker = new Breaker({ breakerAfter: 2, cooldownMs: 1000, now: () => 0 });
   breaker.recordFailure("x");
   breaker.recordSuccess();
   breaker.recordFailure("x");
-  assert.equal(breaker.state(), "ok", "中间成功过就不算连续失败");
+  assert.equal(breaker.state(), "ok", "a success in between breaks the streak");
 });
 
-test("断路器：暂停与自动恢复", () => {
+test("breaker: pause and auto-resume", () => {
   let nowMs = 0;
-  // 冷却 60 分钟 > 暂停 30 分钟：暂停到期后应当回到 degraded，而不是直接 ok
+  // cooldown 60 min > pause 30 min: after the pause expires it should return to degraded, not straight to ok
   const breaker = new Breaker({ breakerAfter: 3, cooldownMs: 60 * 60_000, now: () => nowMs });
   breaker.recordFailure("x");
   breaker.recordFailure("x");
   breaker.recordFailure("x");
   breaker.pause(30 * 60_000);
-  assert.equal(breaker.state(), "paused", "暂停优先于降级");
+  assert.equal(breaker.state(), "paused", "pause wins over degraded");
   assert.equal(breaker.pauseRemainingMs(), 30 * 60_000);
   nowMs += 30 * 60_001;
-  assert.equal(breaker.state(), "degraded", "暂停到期后回到真实状态");
+  assert.equal(breaker.state(), "degraded", "after the pause expires, back to the real state");
   breaker.resume();
   assert.equal(breaker.state(), "degraded");
 });
 
-// ---------------------------------------------------------------- 意图
+// ---------------------------------------------------------------- Intent
 
-test("意图提取：只取 user 消息，跳过扩展注入与 assistant", () => {
+test("intent: only user messages, skipping extension-injected and assistant", () => {
   const branch = [
-    { type: "message", message: { role: "user", content: "第一条请求" } },
-    { type: "message", message: { role: "assistant", content: "我不算数" } },
-    { type: "message", message: { role: "user", content: [{ type: "text", text: "第二条请求" }] } },
-    { type: "message", message: { role: "user", content: "扩展注入", customType: "plan-mode" } },
-    { type: "tool_result", content: "工具输出不算数" },
+    { type: "message", message: { role: "user", content: "first request" } },
+    { type: "message", message: { role: "assistant", content: "I don't count" } },
+    { type: "message", message: { role: "user", content: [{ type: "text", text: "second request" }] } },
+    { type: "message", message: { role: "user", content: "extension-injected", customType: "plan-mode" } },
+    { type: "tool_result", content: "tool output doesn't count" },
   ];
-  assert.equal(extractRecentIntent(branch), "第一条请求\n\n第二条请求");
+  assert.equal(extractRecentIntent(branch), "first request\n\nsecond request");
   assert.equal(extractRecentIntent([]), "");
 });
 
-test("messageText：字符串 / 分段 / 其它类型", () => {
+test("messageText: string / parts / other types", () => {
   assert.equal(messageText("abc"), "abc");
   assert.equal(messageText([{ type: "text", text: "a" }, { type: "image" }, { type: "text", text: "b" }]), "a\nb");
   assert.equal(messageText(42), "");
   assert.equal(messageText(undefined), "");
 });
 
-// ---------------------------------------------------------------- 保护路径
+// ---------------------------------------------------------------- Protected paths
 
-test("保护路径：凭据、版本库元数据、agent 指令文件", () => {
+test("protected paths: credentials, repo metadata, agent instruction files", () => {
   for (const path of [
     "/Users/xd/.ssh/id_rsa",
     "/repo/.git/config",
@@ -189,21 +191,21 @@ test("保护路径：凭据、版本库元数据、agent 指令文件", () => {
   }
 });
 
-test("保护路径：exempt 前缀永远放行（否则连自己的配置都改不了）", () => {
+test("protected paths: an exempt prefix always passes (otherwise you can't even edit your own config)", () => {
   const config = "/Users/xd/.pi/agent/pi-jev-suite.json";
-  assert.notEqual(protectedPathReason(config), null, "默认 .pi 段是保护的");
+  assert.notEqual(protectedPathReason(config), null, "the .pi segment is protected by default");
   assert.equal(protectedPathReason(config, [], ["/Users/xd/.pi/agent/pi-jev-suite"]), null);
 });
 
-test("保护路径：配置里的附加模式（子串或 glob）", () => {
+test("protected paths: extra config patterns (substring or glob)", () => {
   assert.notEqual(protectedPathReason("/opt/company/secrets/x.txt", ["/opt/company/"]), null);
   assert.notEqual(protectedPathReason("/repo/docs/private.md", ["**/private.md"]), null);
   assert.equal(protectedPathReason("/repo/docs/public.md", ["**/private.md"]), null);
 });
 
-// ---------------------------------------------------------------- 脱敏
+// ---------------------------------------------------------------- Redaction
 
-test("脱敏：常见凭据形态被抹掉", () => {
+test("redaction: common credential shapes are scrubbed", () => {
   const samples = [
     "ghp_abcdefghijklmnopqrstuvwxyz01",
     "AKIAIOSFODNN7EXAMPLE",
@@ -214,14 +216,14 @@ test("脱敏：常见凭据形态被抹掉", () => {
   ];
   for (const sample of samples) {
     const out = redact(`curl -H "${sample}" https://x.dev`);
-    assert.ok(!out.includes(sample), `没抹掉：${sample} → ${out}`);
+    assert.ok(!out.includes(sample), `not scrubbed: ${sample} → ${out}`);
     assert.ok(out.includes("<redacted>"));
   }
 });
 
-// ---------------------------------------------------------------- 写入目标
+// ---------------------------------------------------------------- Write target
 
-test("写入目标：相对路径 vs 绝对路径", () => {
+test("write target: relative vs absolute path", () => {
   assert.deepEqual(resolveWriteTarget({ path: "src/a.ts" }, "/repo"), {
     absolutePath: "/repo/src/a.ts",
     relativePath: "src/a.ts",
@@ -232,23 +234,23 @@ test("写入目标：相对路径 vs 绝对路径", () => {
   assert.equal(resolveWriteTarget({}, "/repo"), null);
 });
 
-// ---------------------------------------------------------------- 端到端
+// ---------------------------------------------------------------- End to end
 
-test("端到端：不在门禁范围的工具直接放行", async () => {
+test("end-to-end: tools outside the gate's scope pass through", async () => {
   const v = await evaluateToolCall("read", {}, deps());
   assert.equal(v.kind, "allow");
   assert.equal(v.layer, "config");
 });
 
-test("端到端：只读命令走第 ② 层，不问 Jev", async () => {
+test("end-to-end: read-only commands take layer ②, no Jev call", async () => {
   const f = fakeClient(okResult());
   const v = await evaluateToolCall("bash", { command: "ls -la" }, deps({ client: f.client }));
   assert.equal(v.kind, "allow");
   assert.equal(v.layer, "readonly");
-  assert.equal(f.calls.length, 0, "快路径不该打网络");
+  assert.equal(f.calls.length, 0, "the fast path must not hit the network");
 });
 
-test("端到端：rtk 包装 + 惰性赋值也不问 Jev", async () => {
+test("end-to-end: rtk wrapping + lazy assignment also skips Jev", async () => {
   const f = fakeClient(okResult());
   const v = await evaluateToolCall(
     "bash",
@@ -259,7 +261,7 @@ test("端到端：rtk 包装 + 惰性赋值也不问 Jev", async () => {
   assert.equal(f.calls.length, 0);
 });
 
-test("端到端：硬拦在 Jev 之前，概率不可覆盖", async () => {
+test("end-to-end: hard deny runs before Jev and no probability can override it", async () => {
   const f = fakeClient(okResult());
   const v = await evaluateToolCall("bash", { command: "rm -rf /" }, deps({ client: f.client }));
   assert.equal(v.kind, "block");
@@ -267,7 +269,7 @@ test("端到端：硬拦在 Jev 之前，概率不可覆盖", async () => {
   assert.equal(f.calls.length, 0);
 });
 
-test("端到端：命中 deny 的也不问 Jev", async () => {
+test("end-to-end: a deny-rule hit also skips Jev", async () => {
   const f = fakeClient(okResult());
   const v = await evaluateToolCall(
     "bash",
@@ -279,7 +281,7 @@ test("端到端：命中 deny 的也不问 Jev", async () => {
   assert.equal(f.calls.length, 0);
 });
 
-test("端到端：需要判定的命令会带上意图、原因与脱敏后的命令", async () => {
+test("end-to-end: a judged command carries intent, reasons, and the redacted command", async () => {
   const f = fakeClient(okResult());
   const v = await evaluateToolCall(
     "bash",
@@ -292,27 +294,30 @@ test("端到端：需要判定的命令会带上意图、原因与脱敏后的�
 
   const state = f.calls[0]!.state.value as Record<string, unknown>;
   assert.equal(state["tool"], "bash");
-  assert.ok(String(state["operation"]).includes("<redacted>"), "命令里的凭据必须被抹掉");
-  assert.equal(state["user_intent"], "请把 README 里的命令更新一下");
-  assert.deepEqual(state["matched_policy_reasons"], ["不在只读表：curl"]);
+  assert.ok(String(state["operation"]).includes("<redacted>"), "a credential in the command must be scrubbed");
+  assert.equal(state["user_intent"], "Update the commands in the README");
+  // Wording is policy.ts's business: assert that a reason was carried, not what it says.
+  const reasons = state["matched_policy_reasons"] as string[];
+  assert.equal(reasons.length, 1);
+  assert.match(reasons[0]!, /curl/);
   assert.ok(f.calls[0]!.questions["allow"]);
 });
 
-test("端到端：没有 key 时第 ③ 层拦，第 ①② 层照常", async () => {
+test("end-to-end: no key blocks layer ③ while layers ①② still work", async () => {
   const blocked = await evaluateToolCall("bash", { command: "npm install" }, deps({ client: null }));
   assert.equal(blocked.kind, "block");
   assert.equal(blocked.layer, "unavailable");
 
   const allowed = await evaluateToolCall("bash", { command: "ls -la" }, deps({ client: null }));
-  assert.equal(allowed.kind, "allow", "只读命令不依赖 Jev");
+  assert.equal(allowed.kind, "allow", "read-only commands don't depend on Jev");
   assert.equal(allowed.layer, "readonly");
 });
 
-test("端到端：判定失败会记进断路器，并降级后续调用", async () => {
+test("end-to-end: a failed judgement feeds the breaker and degrades later calls", async () => {
   const failing: JevClient = {
     transport: "test",
     usage: () => EMPTY_USAGE("2026-09-20"),
-    ask: async () => ({ ok: false, reason: "network", detail: "连不上", latencyMs: 3 }),
+    ask: async () => ({ ok: false, reason: "network", detail: "unreachable", latencyMs: 3 }),
   };
   const breaker = new Breaker({ breakerAfter: 1, cooldownMs: 60_000, now: () => 0 });
   const d = deps({ client: failing, breaker });
@@ -320,17 +325,17 @@ test("端到端：判定失败会记进断路器，并降级后续调用", async
   const first = await evaluateToolCall("bash", { command: "npm install" }, d);
   assert.equal(first.kind, "block");
   assert.equal(first.layer, "unavailable");
-  assert.match(first.reason, /连不上/);
+  assert.match(first.reason, /unreachable/);
 
   const second = await evaluateToolCall("bash", { command: "npm install" }, d);
-  assert.equal(second.layer, "degraded", "已经是降级状态，不再打网络");
+  assert.equal(second.layer, "degraded", "already degraded, no more network calls");
   assert.match(second.reason, /now degraded/);
 
-  // 降级不影响第 ①② 层
+  // degradation does not affect layers ①②
   assert.equal((await evaluateToolCall("bash", { command: "git status" }, d)).kind, "allow");
 });
 
-test("端到端：暂停时全放行", async () => {
+test("end-to-end: everything passes while paused", async () => {
   const breaker = new Breaker({ breakerAfter: 1, cooldownMs: 60_000, now: () => 0 });
   breaker.pause(60_000);
   const v = await evaluateToolCall("bash", { command: "npm install" }, deps({ breaker }));
@@ -338,7 +343,7 @@ test("端到端：暂停时全放行", async () => {
   assert.equal(v.layer, "paused");
 });
 
-test("端到端：意图为空时用占位文本（不能读成“没要求所以随意”）", async () => {
+test("end-to-end: an empty intent uses the placeholder (must not read as 'asked for nothing, so anything goes')", async () => {
   const f = fakeClient(okResult({ allow: 0.1 }));
   const v = await evaluateToolCall("bash", { command: "npm install" }, deps({ client: f.client, intent: "" }));
   const state = f.calls[0]!.state.value as Record<string, unknown>;
@@ -347,7 +352,7 @@ test("端到端：意图为空时用占位文本（不能读成“没要求所�
   assert.equal(v.judgment?.decidingRule, "allow");
 });
 
-test("端到端：项目内的普通写入不判定，也不读取文件内容", async () => {
+test("end-to-end: an ordinary in-project write is not judged, and its content is not read", async () => {
   const f = fakeClient(okResult());
   const v = await evaluateToolCall(
     "write",
@@ -359,7 +364,7 @@ test("端到端：项目内的普通写入不判定，也不读取文件内容",
   assert.equal(f.calls.length, 0);
 });
 
-test("端到端：写保护路径会被判定，且状态里没有文件内容", async () => {
+test("end-to-end: writing a protected path is judged, and the state carries no file content", async () => {
   const f = fakeClient(okResult());
   const v = await evaluateToolCall(
     "write",
@@ -371,11 +376,14 @@ test("端到端：写保护路径会被判定，且状态里没有文件内容",
   const state = f.calls[0]!.state.value as Record<string, unknown>;
   assert.equal(state["operation"], "/Users/xd/.ssh/authorized_keys");
   assert.equal(state["outside_working_directory"], true);
-  assert.ok(!Object.keys(state).includes("content"), "绝不发文件内容");
-  assert.ok(JSON.stringify(f.calls[0]).includes("受保护目录段"), "带了保护原因");
+  assert.ok(!Object.keys(state).includes("content"), "never send file contents");
+  assert.ok(
+    (state["matched_policy_reasons"] as string[]).length > 0,
+    "carries the protected-path reason",
+  );
 });
 
-test("端到端：写工作目录外但非保护路径，也会被判定", async () => {
+test("end-to-end: writing outside the working directory, even if not protected, is judged", async () => {
   const f = fakeClient(okResult());
   const v = await evaluateToolCall("edit", { path: "/tmp/notes.md", edits: [{}, {}] }, deps({ client: f.client }));
   assert.equal(v.layer, "jev");
@@ -384,7 +392,7 @@ test("端到端：写工作目录外但非保护路径，也会被判定", async
   assert.equal(state["edit_count"], 2);
 });
 
-test("端到端：本包自己的配置可写（exempt）", async () => {
+test("end-to-end: this package's own config is writable (exempt)", async () => {
   const f = fakeClient(okResult());
   const v = await evaluateToolCall(
     "write",

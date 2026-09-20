@@ -1,33 +1,34 @@
 /**
  * pi-jev-suite / policy.ts
  *
- * 纯函数层：切段 → 硬拦 → 配置匹配 → 只读判定。
- * 无 IO、无网络、无时钟、无随机 —— 必须能脱离 pi 单独跑（`node --test`）。
+ * Pure-function layer: split into segments -> hard deny -> config matching -> read-only check.
+ * No IO, no network, no clock, no randomness -- it must run outside pi (`node --test`).
  *
- * 设计原则（见 PLAN.md §2）：
- *   **静态分析只用来【放行明显安全的】。任何不确定 → 送去 Jev 层。**
+ * Design principle (see PLAN.md §2):
+ *   **Static analysis is only for allowing the obviously-safe. Anything uncertain goes to the Jev layer.**
  *
- * 与 pi-jev-auto-mode 的根本差别：判定对象是**段**（切段后的 argv），不是整条命令字符串。
- * 所以配置里的 allow/deny 模式不再被 `;` `&&` `|` `$` 之类字符禁用。
+ * The fundamental difference from pi-jev-auto-mode: the unit of judgement is a **segment**
+ * (the argv after splitting), not the whole command string. That is why allow/deny patterns are
+ * no longer disabled by characters like `;` `&&` `|` `$`.
  */
 
-// ---------------------------------------------------------------- 类型
+// ---------------------------------------------------------------- Types
 
 export interface Segment {
-  /** 原始段文本（未归一化） */
+  /** Raw segment text (before normalization). */
   raw: string;
-  /** 含无法静态解析的内容（命令替换 / 反引号 / heredoc / 子 shell / 引号不闭合 / 不安全赋值） */
+  /** Contains content that cannot be statically parsed (command substitution / backtick / heredoc / subshell / unterminated quote / unsafe assignment). */
   tainted: boolean;
-  /** 归一化后的命令：剥掉前置赋值与透明包装器；纯赋值段为空串 */
+  /** Normalized command: leading assignments and transparent wrappers stripped; empty for a pure-assignment segment. */
   command: string;
-  /** 纯赋值段（惰性，不算命令） */
+  /** Pure-assignment segment (inert, not treated as a command). */
   lazy: boolean;
 }
 
 export interface Token {
-  /** 去掉外层引号后的文本 */
+  /** Text with the outer quotes removed. */
   text: string;
-  /** 原始 token 是否以引号开头（引号开头的不可能是命令行选项） */
+  /** Whether the raw token started with a quote (a quoted token cannot be a command-line option). */
   quoted: boolean;
 }
 
@@ -48,18 +49,19 @@ export interface BashResult {
   segments: Segment[];
 }
 
-// ---------------------------------------------------------------- 切段
+// ---------------------------------------------------------------- Splitting
 
 const SHELL_SEPARATORS = new Set([";", "&", "|", "\n"]);
 
 /**
- * 按 `;` `&&` `||` `|` `&` 换行切段，尊重引号与反斜杠转义。
+ * Split on `;` `&&` `||` `|` `&` and newlines, respecting quotes and backslash escapes.
  *
- * `tainted` 一旦为真不可逆：宁可整段送 Jev，也不做半吊子解析。
- * 触发 taint 的东西：`$( )`、反引号、`<<` heredoc、未加引号的 `(`/`)`、引号不闭合。
+ * `tainted` is one-way: rather than half-parse, a whole segment goes to Jev.
+ * What sets taint: `$( )`, backticks, `<<` heredoc, an unquoted `(`/`)`, an unterminated quote.
  *
- * `ponytail:` 这是手写状态机，不是 shell 解析器。上限：heredoc / eval / 复杂嵌套一律 taint。
- * 升级路径：换成真正的 shell 词法器（如 shell-quote）。当前策略是"不确定就不放行"。
+ * `ponytail:` this is a hand-written state machine, not a shell parser. Ceiling: heredoc /
+ * eval / complex nesting are all tainted. Upgrade path: a real shell tokenizer (e.g. shell-quote).
+ * Current policy: when uncertain, do not allow.
  */
 export function splitChain(command: string): Segment[] {
   const out: Segment[] = [];
@@ -135,7 +137,7 @@ export function splitChain(command: string): Segment[] {
     }
 
     if (SHELL_SEPARATORS.has(ch)) {
-      // `2>&1` / `>&2` 是文件描述符复制，不是命令分隔符
+      // `2>&1` / `>&2` is a file-descriptor dup, not a command separator
       if (ch === "&" && buf.trimEnd().endsWith(">")) {
         buf += ch;
         while (i + 1 < command.length && /[0-9-]/.test(command[i + 1]!)) buf += command[++i]!;
@@ -148,12 +150,12 @@ export function splitChain(command: string): Segment[] {
     buf += ch;
   }
 
-  if (quote !== null) tainted = true; // 引号不闭合
+  if (quote !== null) tainted = true; // unterminated quote
   flush();
   return out;
 }
 
-// ---------------------------------------------------------------- 归一化
+// ---------------------------------------------------------------- Normalization
 
 export function unquote(text: string): string {
   if (text.length >= 2) {
@@ -163,7 +165,7 @@ export function unquote(text: string): string {
   return text;
 }
 
-/** 赋值值里出现任何"可能执行别的东西"的字符 → 不当成惰性赋值 */
+/** Any character in the value that "might run something else" -> not an inert assignment. */
 export function isSafeAssignmentValue(value: string): boolean {
   return !/[$`()|&<>\\;'"]/.test(unquote(value));
 }
@@ -171,10 +173,11 @@ export function isSafeAssignmentValue(value: string): boolean {
 const ASSIGNMENT_RE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(\S*)/;
 
 /**
- * 剥掉前置赋值（`VAR=value`，可带 `export`）与透明包装器。
+ * Strip leading assignments (`VAR=value`, optionally with `export`) and transparent wrappers.
  *
- * 这就是 rtk 问题的解：`export RTK_DB_PATH='…'; rtk ls -l` 的**第一段**是纯赋值 →
- * 惰性、不参与任何判定；第二段 `rtk ls -l` 剥掉包装器后就是 `ls -l`。
+ * This is the rtk fix: in `export RTK_DB_PATH='...'; rtk ls -l` the **first** segment is a pure
+ * assignment -> inert, judged by nothing; the second segment `rtk ls -l` becomes `ls -l` once
+ * the wrapper is stripped.
  */
 export function normalizeSegment(
   raw: string,
@@ -200,7 +203,7 @@ export function normalizeSegment(
   return { command: text, lazy: false, unsafe: false };
 }
 
-// ---------------------------------------------------------------- 分词
+// ---------------------------------------------------------------- Tokenizing
 
 export function tokenize(segment: string): Token[] {
   const tokens: Token[] = [];
@@ -253,12 +256,13 @@ export function tokenize(segment: string): Token[] {
   return tokens;
 }
 
-// ---------------------------------------------------------------- 模式匹配
+// ---------------------------------------------------------------- Pattern matching
 
 /**
- * 配置模式 → 正则：`*` 匹配任意字符（含空格），其余字符一律转义，整串锚定。
- * 因为匹配对象是**单个段**，`*` 不会跨越命令边界，所以用户能写出
- * `git -C * status`、`npm --prefix * run test` 这种以前根本写不出来的模式。
+ * Config pattern -> regex: `*` matches any characters (spaces included), every other character
+ * is escaped, the whole thing is anchored. Because matching is against a **single segment**, `*`
+ * never crosses a command boundary, so users can write patterns like `git -C * status` or
+ * `npm --prefix * run test` that were previously impossible.
  */
 export function matchCommandPattern(pattern: string, text: string): boolean {
   const SENTINEL = "\u0000";
@@ -267,7 +271,7 @@ export function matchCommandPattern(pattern: string, text: string): boolean {
   return new RegExp(`^${body}$`).test(text);
 }
 
-// ---------------------------------------------------------------- 硬拦
+// ---------------------------------------------------------------- Hard deny
 
 const ROOT_DIRS = new Set([
   "/", "/Users", "/home", "/System", "/Library", "/Applications",
@@ -275,7 +279,7 @@ const ROOT_DIRS = new Set([
 ]);
 
 const DISKUTIL_WRITES = new Set([
-  // 全部小写：比较时已 toLowerCase()
+  // all lowercase: the comparison already calls toLowerCase()
   "erase", "erasedisk", "erasevolume", "zerodisk", "partitiondisk", "reformat", "secureerase",
 ]);
 
@@ -285,12 +289,12 @@ export function isRootTarget(target: string): boolean {
   const s = unquote(target);
   if (s === "/" || s === "~" || s === "$HOME" || s === "${HOME}") return true;
   if (ROOT_DIRS.has(s)) return true;
-  if (/^\/Users\/[^/]+$/.test(s) || /^\/home\/[^/]+$/.test(s)) return true; // 家目录根
+  if (/^\/Users\/[^/]+$/.test(s) || /^\/home\/[^/]+$/.test(s)) return true; // a home directory root
   if (/^~\/[*.]?$/.test(s)) return true;
   return false;
 }
 
-/** 把变量引用折叠成 `$VAR`，再看是否"只剩一个变量/glob" —— 连基目录都看不出 */
+/** Fold variable references into `$VAR`, then check whether "only a variable/glob remains" -- i.e. even the base directory is unknowable. */
 export function isOpaqueTarget(target: string): boolean {
   const s = unquote(target)
     .replace(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g, "$VAR")
@@ -314,8 +318,9 @@ const GIT_GLOBAL_BARE = new Set([
 ]);
 
 /**
- * 剥掉 git 的全局选项，让 `git -C <dir> status` 也能被识别成只读。
- * 用**表**而不是猜 —— 认不出来的选项会留在原位，导致判不出来（送 Jev）。
+ * Strip git's global options so `git -C <dir> status` is recognized as read-only too.
+ * Uses a **table** rather than guessing -- an unrecognized option stays in place, which makes
+ * the command not read-only (and thus sent to Jev).
  */
 export function stripGitGlobalOptions(tokens: readonly Token[]): Token[] {
   let i = 1;
@@ -339,17 +344,18 @@ export function stripGitGlobalOptions(tokens: readonly Token[]): Token[] {
 }
 
 /**
- * 硬拦：**看整段的原始 argv**，命中即拦，不可配置放宽。
+ * Hard deny: inspects the **whole segment's raw argv**; a hit blocks and cannot be loosened by config.
  *
- * 与上游的区别：用**引号感知的 argv** 判断选项，而不是在整条字符串上正则猜。
- * `rm -rf "$d/pi-warden.md"` 在这里是 argv `["rm","-rf","$d/pi-warden.md"]` ——
- * flag 是 `-rf`、目标是路径，不在系统根列表、也不是"完全看不出基目录"，所以**不硬拦**。
+ * Difference from upstream: options are judged from a **quote-aware argv**, not guessed by regex
+ * over the whole string. `rm -rf "$d/pi-warden.md"` is argv `["rm","-rf","$d/pi-warden.md"]` here --
+ * the flag is `-rf`, the target is a path that is neither a system root nor "unknowable", so it
+ * is **not** hard-denied.
  */
 const COMMAND_PREFIXES = new Set([
   "sudo", "doas", "command", "nohup", "nice", "time", "env", "stdbuf", "ionice", "setsid", "exec", "xcrun",
 ]);
 
-/** 前缀自带的取值选项（`sudo -u root …` 里的 `-u root`） */
+/** Options that take a value for these prefixes (the `-u root` in `sudo -u root …`). */
 const PREFIX_FLAGS_WITH_VALUE = new Set([
   "-u", "-g", "-p", "-C", "-U", "-r", "-t", "-n", "--user", "--group", "--prompt", "--chdir", "--chroot",
 ]);
@@ -357,10 +363,11 @@ const PREFIX_FLAGS_WITH_VALUE = new Set([
 const ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
- * 找到"真正要执行的那个命令"在 argv 里的位置。
+ * Find the position of "the command that actually runs" in argv.
  *
- * 不做这一步，`sudo rm -rf /` / `env FOO=1 rm -rf /` 会绕过硬拦（token[0] 是 sudo / env，不是 rm）。
- * 上游拿整串正则反而盖住了这种情况 —— 按 argv 判断就不能退化。
+ * Without this, `sudo rm -rf /` / `env FOO=1 rm -rf /` would bypass hard deny (token[0] is
+ * sudo/env, not rm). Upstream's whole-string regex actually masked this case -- judging by argv
+ * must not regress.
  */
 export function effectiveCommandIndex(tokens: readonly Token[], wrappers: readonly string[] = []): number {
   let i = 0;
@@ -370,7 +377,7 @@ export function effectiveCommandIndex(tokens: readonly Token[], wrappers: readon
       i++;
       continue;
     }
-    // 透明包装器与命令前缀一样跳过：否则 `rtk rm -rf /` 会让硬拦认不出 rm
+    // transparent wrappers are skipped like command prefixes: otherwise `rtk rm -rf /` hides rm from hard deny
     if (token.quoted || !(COMMAND_PREFIXES.has(token.text.toLowerCase()) || wrappers.includes(token.text))) {
       break;
     }
@@ -403,16 +410,18 @@ export function hardDenySegment(raw: string, wrappers: readonly string[] = []): 
     if (recursive) {
       const targets = rest.filter((t) => t.quoted || !t.text.startsWith("-")).map((t) => t.text);
       for (const t of targets) {
-        if (isRootTarget(t)) return `递归删除根目录：${t}`;
+        if (isRootTarget(t)) return `recursive delete of a root directory: ${t}`;
       }
-      if (targets.length > 0 && targets.every((t) => isOpaqueTarget(t))) return "递归删除的目标无法静态确定";
+      if (targets.length > 0 && targets.every((t) => isOpaqueTarget(t))) {
+        return "recursive delete target cannot be statically determined";
+      }
     }
     return null;
   }
 
-  if (cmd.startsWith("mkfs") || cmd.startsWith("wipefs")) return `格式化 / 擦签名：${cmd}`;
-  if (cmd === "dd" && rest.some((t) => /^of=\/dev\//.test(t.text))) return "dd 写裸设备";
-  if (cmd === "diskutil" && DISKUTIL_WRITES.has((rest[0]?.text ?? "").toLowerCase())) return "macOS 抹盘 / 分区";
+  if (cmd.startsWith("mkfs") || cmd.startsWith("wipefs")) return `formatting / wiping signature: ${cmd}`;
+  if (cmd === "dd" && rest.some((t) => /^of=\/dev\//.test(t.text))) return "dd writes to a raw device";
+  if (cmd === "diskutil" && DISKUTIL_WRITES.has((rest[0]?.text ?? "").toLowerCase())) return "macOS disk erase / partition";
 
   if (cmd === "git") {
     const afterGlobals = stripGitGlobalOptions(tokens.slice(idx));
@@ -422,7 +431,7 @@ export function hardDenySegment(raw: string, wrappers: readonly string[] = []): 
         (t) => !t.quoted && ["-f", "--force", "--force-with-lease", "--force-if-includes"].includes(t.text),
       );
       const targets = args.filter((t) => !t.text.startsWith("-")).map((t) => t.text);
-      if (forced && targets.some((t) => PROTECTED_BRANCHES.has(normalizeRefspec(t)))) return "强推保护分支";
+      if (forced && targets.some((t) => PROTECTED_BRANCHES.has(normalizeRefspec(t)))) return "force push to a protected branch";
     }
   }
 
@@ -438,8 +447,8 @@ export function hardDenyReason(segments: readonly Segment[], wrappers: readonly 
 }
 
 /**
- * 整条命令级别的硬拦。fork bomb 会被切段切碎（`:` `|` `&` `;` 都是分隔符），
- * 所以这一条必须在切段前看原文。
+ * Whole-command hard deny. A fork bomb is shredded by splitting (`:` `|` `&` `;` are all
+ * separators), so this one must look at the raw text before splitting.
  */
 export function hardDenyCommand(
   command: string,
@@ -450,12 +459,13 @@ export function hardDenyCommand(
   return hardDenyReason(segments, wrappers);
 }
 
-// ---------------------------------------------------------------- 只读判定
+// ---------------------------------------------------------------- Read-only check
 
 const READ_ONLY_COMMANDS = new Set([
   "pwd", "cd", "ls", "tree", "cat", "bat", "head", "tail", "less", "more",
-  // `read` 是 shell 内建（把 stdin 读进变量，无副作用），也是 pi-rtk-optimizer 给 `tail` 用的名字：
-  // rtk 不只是加前缀，它会把动词翻译掉（tail → `rtk read`）—— 只剥包装器会剩下一个从没写过的命令名。
+  // `read` is a shell builtin (reads stdin into a variable, no side effects) and also the name
+  // pi-rtk-optimizer uses for `tail`: rtk does not just add a prefix, it translates the verb
+  // (tail -> `rtk read`) -- stripping only the wrapper leaves a command name we never wrote.
   "read",
   "wc", "file", "stat", "realpath", "readlink", "basename", "dirname", "du", "df",
   "find", "grep", "rg", "ag", "jq", "diff", "cmp", "sort", "uniq", "cut", "column", "nl",
@@ -463,10 +473,10 @@ const READ_ONLY_COMMANDS = new Set([
   "date", "uptime", "id", "groups", "true", "false", ":",
 ]);
 
-/** 拒绝：`awk`（可 system()/print>）、`sed`（-i 写文件）、`env`/`printenv`（能 dump 环境里的 key） */
+/** Deliberately excluded: `awk` (can system()/print>), `sed` (-i writes files), `env`/`printenv` (can dump keys from the environment). */
 const FIND_WRITE_FLAGS = ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"];
 
-/** 这些命令会把文件内容放进上下文 → 必须确认参数不是凭据文件 */
+/** These commands put file contents into context -> their arguments must not be credential files. */
 const CREDENTIAL_SENSITIVE = new Set(["cat", "bat", "head", "tail", "less", "more", "read", "xxd", "od", "strings", "grep", "rg", "ag", "jq"]);
 
 const VERSION_ONLY_FLAGS = new Set(["--version", "-v", "--help", "-h", "version"]);
@@ -501,14 +511,14 @@ export function isCredentialPath(path: string): boolean {
 
 const REDIRECT_RE = /(\d*)>>?\s*(&[0-9-]+|[^\s;&|<>]*)/g;
 
-/** 写入文件的重定向 → 不是只读。返回原因，没有则返回 null */
+/** A redirect that writes a file -> not read-only. Returns the reason, or null. */
 export function writesToFile(segment: string): string | null {
   for (const m of segment.matchAll(REDIRECT_RE)) {
     const target = m[2] ?? "";
-    if (target === "") return "重定向目标无法确定";
+    if (target === "") return "redirect target cannot be determined";
     if (/^&[0-9-]+$/.test(target)) continue; // 2>&1 / >&2
     if (target === "/dev/null") continue;
-    return `重定向写入 ${target}`;
+    return `redirect writes to ${target}`;
   }
   return null;
 }
@@ -520,28 +530,29 @@ const READONLY_GIT_SUBCOMMANDS = new Set([
 ]);
 
 /**
- * `ponytail:` 只收纯读取的 git 子命令。`branch` / `tag` / `remote` / `stash` / `worktree` /
- * `config` 既能列也能改，判"只带列举参数"要一层参数白名单 —— 本版直接把它们交给 Jev
- * （或用户自己写进 `gate.allow`）。上限：这些命令默认多花一次 Jev 调用。
+ * `ponytail:` only purely read-only git subcommands. `branch` / `tag` / `remote` / `stash` /
+ * `worktree` / `config` can both list and mutate, and judging "only listing flags" would need a
+ * per-flag whitelist -- this version just sends them to Jev (or the user lists them in
+ * `gate.allow`). Ceiling: these commands cost one extra Jev call each by default.
  */
 export function gitReadOnlyProblem(tokens: readonly Token[]): string | null {
   const rest = stripGitGlobalOptions(tokens);
-  if (rest.length === 0) return "git 无子命令";
+  if (rest.length === 0) return "git has no subcommand";
   const sub = rest[0]!.text;
-  if (!READONLY_GIT_SUBCOMMANDS.has(sub)) return `git 子命令不在只读表：${sub}`;
+  if (!READONLY_GIT_SUBCOMMANDS.has(sub)) return `git subcommand not in the read-only list: ${sub}`;
   if (rest.slice(1).some((t) => t.text === "--output" || t.text.startsWith("--output="))) {
-    return "git --output 会写文件";
+    return "git --output writes a file";
   }
   return null;
 }
 
-/** 返回 null = 明显只读；返回字符串 = 为什么不能当只读 */
+/** Returns null = obviously read-only; returns a string = why it cannot be treated as read-only. */
 export function readOnlyProblem(segment: string): string | null {
   const redirect = writesToFile(segment);
   if (redirect) return redirect;
 
   const tokens = tokenize(segment);
-  if (tokens.length === 0) return "空命令";
+  if (tokens.length === 0) return "empty command";
   const cmd = tokens[0]!.text;
   const args = tokens.slice(1).map((t) => t.text);
 
@@ -550,31 +561,33 @@ export function readOnlyProblem(segment: string): string | null {
   if (!READ_ONLY_COMMANDS.has(cmd)) {
     const versionOnly = args.length > 0 && args.every((a) => VERSION_ONLY_FLAGS.has(a));
     if (VERSION_ONLY_COMMANDS.has(cmd) && versionOnly) return null;
-    return `不在只读表：${cmd}`;
+    return `not in the read-only list: ${cmd}`;
   }
-  if (cmd === "find" && args.some((a) => FIND_WRITE_FLAGS.includes(a))) return "find 带写入 / 执行参数";
+  if (cmd === "find" && args.some((a) => FIND_WRITE_FLAGS.includes(a))) return "find with a write / execute flag";
   if (CREDENTIAL_SENSITIVE.has(cmd)) {
-    if (args.some((a) => a.includes("$"))) return "参数含未解析变量，无法确认是否读凭据文件";
+    if (args.some((a) => a.includes("$"))) {
+      return "argument contains an unresolved variable, cannot confirm it does not read a credential file";
+    }
     for (const a of args) {
-      if (isCredentialPath(a)) return `读凭据文件：${a}`;
+      if (isCredentialPath(a)) return `reads a credential file: ${a}`;
     }
   }
   return null;
 }
 
-// ---------------------------------------------------------------- 流水线
+// ---------------------------------------------------------------- Pipeline
 
 export function decideBash(command: string, policy: BashPolicy): BashResult {
   const segments = splitChain(command);
   if (segments.length === 0) {
-    return { decision: { kind: "allow", layer: "config", reason: "空命令" }, segments };
+    return { decision: { kind: "allow", layer: "config", reason: "empty command" }, segments };
   }
 
-  // 0. 硬拦（每段的原始文本）
+  // 0. Hard deny (on each segment's raw text)
   const denied = hardDenyCommand(command, segments, policy.transparentWrappers);
   if (denied) return { decision: { kind: "deny", layer: "harddeny", reason: denied }, segments };
 
-  // 归一化
+  // Normalize
   for (const seg of segments) {
     const norm = normalizeSegment(seg.raw, policy.transparentWrappers);
     seg.command = norm.command;
@@ -584,14 +597,14 @@ export function decideBash(command: string, policy: BashPolicy): BashResult {
 
   const live = segments.filter((s) => !s.lazy);
 
-  // 1a. deny（原始形态与归一化形态都匹配）
+  // 1a. deny (matches against both the raw and the normalized form)
   for (const seg of segments) {
     for (const pattern of policy.deny) {
       if (
         matchCommandPattern(pattern, seg.raw) ||
         (seg.command !== "" && matchCommandPattern(pattern, seg.command))
       ) {
-        return { decision: { kind: "deny", layer: "config", reason: `命中 deny：${pattern}` }, segments };
+        return { decision: { kind: "deny", layer: "config", reason: `matched deny: ${pattern}` }, segments };
       }
     }
   }
@@ -609,37 +622,40 @@ export function decideBash(command: string, policy: BashPolicy): BashResult {
     return readOnlyProblem(seg.command) === null;
   };
 
-  // 1b. 所有命令段都被 allow 覆盖 → 放行
+  // 1b. every command segment covered by allow -> allow
   if (live.length > 0 && live.every(covered)) {
-    return { decision: { kind: "allow", layer: "config", reason: "全部段命中 allow" }, segments };
+    return { decision: { kind: "allow", layer: "config", reason: "all segments matched allow" }, segments };
   }
 
-  // 2. 只读层：每段要么被 allow 覆盖、要么明显只读
+  // 2. Read-only layer: every segment is either covered by allow or obviously read-only
   if (live.every((seg) => covered(seg) || readOnly(seg))) {
-    return { decision: { kind: "allow", layer: "readonly", reason: "全部段只读或已白名单" }, segments };
+    return {
+      decision: { kind: "allow", layer: "readonly", reason: "all segments are read-only or allowlisted" },
+      segments,
+    };
   }
 
-  // 3. Jev 层
+  // 3. Jev layer
   const reasons = live
     .filter((seg) => !covered(seg) && !readOnly(seg))
     .map((seg) => {
-      if (seg.tainted) return `无法静态解析：${seg.raw.slice(0, 80)}`;
-      return readOnlyProblem(seg.command) ?? `未放行：${seg.command.slice(0, 80)}`;
+      if (seg.tainted) return `cannot statically parse: ${seg.raw.slice(0, 80)}`;
+      return readOnlyProblem(seg.command) ?? `not cleared: ${seg.command.slice(0, 80)}`;
     });
 
   return {
-    decision: { kind: "ask", layer: "jev", reason: reasons.join("；") || "未放行" },
+    decision: { kind: "ask", layer: "jev", reason: reasons.join("; ") || "not cleared" },
     segments,
   };
 }
 
-// ---------------------------------------------------------------- 保护路径
+// ---------------------------------------------------------------- Protected paths
 
 /**
- * 目录段：路径里任意一段命中就保护。
+ * Directory segments: a hit on any segment of the path protects it.
  *
- * 两类内容在这里：改了就改变“agent 被告知什么”的（.git/.pi/.claude/AGENTS.md），
- * 和装了凭据的（.ssh/.aws/.gnupg/.npmrc…）。
+ * Two kinds live here: things whose modification changes "what the agent was told"
+ * (.git/.pi/.claude/AGENTS.md), and things that hold credentials (.ssh/.aws/.gnupg/.npmrc...).
  */
 export const PROTECTED_DIRECTORY_SEGMENTS: readonly string[] = [
   ".git", ".ssh", ".aws", ".gnupg", ".husky", ".pi", ".claude", ".codex", ".kube", ".docker",
@@ -666,7 +682,7 @@ export const PROTECTED_FILE_PATTERNS: readonly RegExp[] = [
 
 const PROTECTED_ENV_TEMPLATE_EXEMPT = /^\.env\.(example|sample|template|dist)$/;
 
-/** 本包自己的配置与日志：**永远允许写**（否则会重现「连自己的配置都改不了」） */
+/** This package's own config and log: **always writable** (otherwise we re-live the "can't even edit our own config" trap). */
 export function isExemptPath(absolutePath: string, exempt: readonly string[]): boolean {
   const normalized = absolutePath.replace(/\/+/g, "/");
   return exempt.some((prefix) => {
@@ -676,11 +692,12 @@ export function isExemptPath(absolutePath: string, exempt: readonly string[]): b
 }
 
 /**
- * 返回 null = 不是保护路径。
+ * Returns null = not a protected path.
  *
- * `extra` 是配置里的附加模式（子串或 glob 都行）。
- * `exempt` 是**永远允许**的绝对路径前缀 —— 本包自己的配置与日志必须能改，
- * 否则就会出现“连自己的配置都改不了”那个坑（旧方案里的实测问题）。
+ * `extra` holds additional patterns from config (substring or glob both work).
+ * `exempt` holds absolute-path prefixes that are **always allowed** -- this package's own config
+ * and log must stay writable, otherwise we re-live the "can't edit our own config" trap (a real
+ * problem measured in the old design).
  */
 export function protectedPathReason(
   absolutePath: string,
@@ -692,33 +709,34 @@ export function protectedPathReason(
 
   const segments = normalized.split("/").filter(Boolean);
   const segment = segments.find((part) => PROTECTED_DIRECTORY_SEGMENTS.includes(part.toLowerCase()));
-  if (segment !== undefined) return `受保护目录段：${segment}`;
+  if (segment !== undefined) return `protected directory segment: ${segment}`;
 
   const lowered = normalized.toLowerCase();
   const fragment = PROTECTED_PATH_FRAGMENTS.find((part) => lowered.includes(part));
-  if (fragment !== undefined) return `受保护路径：${fragment}`;
+  if (fragment !== undefined) return `protected path: ${fragment}`;
 
   const base = segments[segments.length - 1] ?? "";
   if (!PROTECTED_ENV_TEMPLATE_EXEMPT.test(base)) {
     const pattern = PROTECTED_FILE_PATTERNS.find((re) => re.test(base));
-    if (pattern !== undefined) return `受保护文件：${base}`;
+    if (pattern !== undefined) return `protected file: ${base}`;
   }
 
   for (const pattern of extra) {
     if (pattern.length === 0) continue;
     if (normalized.includes(pattern) || matchCommandPattern(pattern, normalized)) {
-      return `命中配置的 protectedPaths：${pattern}`;
+      return `matched a configured protectedPath: ${pattern}`;
     }
   }
   return null;
 }
 
-// ---------------------------------------------------------------- 脱敏
+// ---------------------------------------------------------------- Redaction
 
 /**
- * 送出去之前把凭据抹掉。
+ * Scrub credentials before anything is sent out.
  *
- * 这是**安全网不是保证** —— 没见过的凭据格式会穿过去，所以它只降风险，不能拿来当“可以随便发”的理由。
+ * This is a **safety net, not a guarantee** -- an unknown credential format will pass through,
+ * so it only lowers risk; it is not a reason to "send anything freely".
  */
 export const SECRET_PATTERNS: readonly RegExp[] = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,

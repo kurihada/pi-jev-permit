@@ -1,23 +1,25 @@
 /**
- * pi-jev-suite / jev.ts —— core：**唯一**发起网络请求的地方。
+ * pi-jev-suite / jev.ts — core: the **single** place that makes network requests.
  *
- * 两种接入方式共用一套解析器（响应体同形）：
- *   - `systemone` → `POST {baseUrl}/v1/systemone`（官方 TypeSafe）
- *   - `decisions` → `POST {baseUrl}/api/alpha/decisions`（OpenRouter 契约；公司网关走这条）
+ * Both access methods share one parser (the response bodies have the same shape):
+ *   - `systemone`  -> `POST {baseUrl}/v1/systemone` (official TypeSafe)
+ *   - `decisions`  -> `POST {baseUrl}/api/alpha/decisions` (the OpenRouter contract; the company gateway uses this one)
  *
- * 这一层同时负责记账（请求数 / token / 估算花费）与判定日志。
- * 消费方（门禁 / jev_evaluate / 顾问）都只通过 createJevClient().ask() 说话。
+ * This layer also does the metering (request count / tokens / estimated spend) and the decision
+ * log. Consumers (the gate / jev_evaluate / the advisor) only talk through createJevClient().ask().
  *
- * 三条硬约束（照抄上游做对的部分 + 今天的教训）：
- *   1. **答不出来 ≠ 同意**：问过的 key 少一个就是失败，不默认通过。
- *   2. 只发 state 与问题，**绝不发文件内容 / diff**（由调用方保证，这里不额外放宽）。
- *   3. 调用方取消是控制流（rethrow），超时/网络/HTTP/形状不符都是失败。
+ * Three hard constraints (the parts upstream got right, plus lessons from today):
+ *   1. **No answer is not a "yes"**: a question key that was asked but not answered is a failure,
+ *      never a default.
+ *   2. Only state and questions are sent; **file contents / diffs are never sent** (guaranteed by
+ *      the caller; this layer does not relax it).
+ *   3. Caller cancellation is control flow (rethrow); timeout / network / HTTP / bad shape are all failures.
  */
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_MODEL_BY_PROTOCOL, type Protocol, protocolPath } from "./config.ts";
 
-// ---------------------------------------------------------------- JSON 边界
+// ---------------------------------------------------------------- JSON boundary
 
 export type JevJson = string | number | boolean | null | JevJson[] | JevJsonObject;
 
@@ -29,7 +31,7 @@ function isJsonRecord(value: unknown): value is JevJsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// ---------------------------------------------------------------- 请求 / 结果
+// ---------------------------------------------------------------- Requests / results
 
 export type JevEntry = string | JevJsonObject | JevJson[] | null;
 
@@ -60,7 +62,7 @@ export type UnavailableReason =
   | "cancelled"
   | "unknown";
 
-/** `budget_exceeded` 是本包自己的码：配额用完不是"Jev 挂了"，状态栏要说清楚 */
+/** `budget_exceeded` is this package's own code: an exhausted quota is not "Jev is down", so the status bar must say which one it is */
 export type AskFailureReason = UnavailableReason | "budget_exceeded";
 
 export interface AskSuccess {
@@ -84,9 +86,10 @@ export interface AskFailure {
 export type AskResult = AskSuccess | AskFailure;
 
 /**
- * 默认 criteria。**比看上去重要**：noul 没有 confidence 字段，唯一的信号就是概率。
- * 中间留白（"说不清就是既非清楚成立也非清楚不成立"）才能让"不确定"作为一个真实答案存在；
- * 如果逼模型给极端值，"不确定"就消失，判定层只能瞎猜。
+ * The default criteria. **More important than it looks**: a noul has no confidence field, so the
+ * probability is the only signal. Leaving the middle open ("can't tell" is neither clearly true
+ * nor clearly false) is what lets "uncertain" exist as a real answer; force the model to pick an
+ * extreme and "uncertain" disappears, and the decision layer can only guess.
  */
 export const DEFAULT_CRITERIA: { readonly true: JevEntry; readonly false: JevEntry } = {
   true: "The condition clearly holds for the item under validation.",
@@ -95,7 +98,7 @@ export const DEFAULT_CRITERIA: { readonly true: JevEntry; readonly false: JevEnt
     "An item the state says nothing about, or that is too ambiguous to decide, is neither clearly true nor clearly false.",
 };
 
-// ---------------------------------------------------------------- 解析
+// ---------------------------------------------------------------- Parsing
 
 export interface ParsedAnswers {
   readonly answers: Record<string, number>;
@@ -113,9 +116,10 @@ function readTokenCount(value: JevJson | undefined): number {
 }
 
 /**
- * 按**实际问过的 key**校验响应。
+ * Validate a response against the question keys that were actually asked.
  *
- * 问过而没答的 key 是失败，不是默认值 —— 门禁的全部意义就是"没答案"和"是"必须不同。
+ * A key that was asked but not answered is a failure, not a default — the whole point of a gate
+ * is that "no answer" and "yes" must be different.
  */
 export function parseAnswers(response: unknown, questionKeys: readonly string[]): ParseResult {
   if (!isJsonRecord(response)) return { ok: false, reason: "malformed_response" };
@@ -146,56 +150,56 @@ export function parseAnswers(response: unknown, questionKeys: readonly string[])
   };
 }
 
-/** 失败要说人话：上游把网关 key 的问题报成 "Could not reach the TypeSafe API"，指向完全错误的方向 */
+/** Failures must say what actually happened: upstream reports a gateway key problem as "Could not reach the TypeSafe API", which points at the wrong thing entirely */
 export function describeStatus(status: number): string {
-  if (status === 401) return "key 无效或被拒（401）";
-  if (status === 403) return "key 无权使用该模型（403）——网关通常只认预设里那个模型名";
-  if (status === 404) return "端点不存在（404）——接入方式与 baseUrl 可能不匹配";
-  if (status === 429) return "限流（429）";
-  if (status >= 500) return `服务端错误（${status}）`;
-  if (status >= 400) return `请求被拒（${status}）`;
-  return `意外状态码（${status}）`;
+  if (status === 401) return "key is invalid or rejected (401)";
+  if (status === 403) return "key has no access to this model (403) — the gateway usually only accepts the model name from its preset";
+  if (status === 404) return "endpoint not found (404) — the access method and baseUrl probably do not match";
+  if (status === 429) return "rate limited (429)";
+  if (status >= 500) return `server error (${status})`;
+  if (status >= 400) return `request rejected (${status})`;
+  return `unexpected status code (${status})`;
 }
 
 export function describeReason(reason: AskFailureReason): string {
   switch (reason) {
     case "timeout":
-      return "请求超时";
+      return "request timed out";
     case "network":
-      return "连不上";
+      return "could not connect";
     case "malformed_response":
-      return "返回格式不认识（问过的 key 没答全，或不满足 noul 的形状）";
+      return "unrecognised response shape (a question key was left unanswered, or it does not match the noul shape)";
     case "state_too_large":
-      return "要发的状态太大";
+      return "the state to send is too large";
     case "cancelled":
-      return "调用方取消了";
+      return "cancelled by the caller";
     case "budget_exceeded":
-      return "当日配额用完";
+      return "daily quota exhausted";
     case "http":
-      return "HTTP 错误";
+      return "HTTP error";
     default:
-      return "未知错误";
+      return "unknown error";
   }
 }
 
-/** 状态栏用：让"这笔判定算在谁头上"在 pi 里看得见 */
+/** For the status bar: makes "whose account this judgment is billed to" visible inside pi */
 export function describeTransport(protocol: Protocol, baseUrl: string): string {
   return `${protocol} at ${baseUrl.replace(/\/+$/, "")}${protocolPath(protocol)}`;
 }
 
-// ---------------------------------------------------------------- 凭据
+// ---------------------------------------------------------------- Credentials
 
 export const SECRET_DIRECTORY_MODE = 0o700;
 export const SECRET_FILE_MODE = 0o600;
 
-/** **按协议分槽**：官方 key 与网关 key 互不覆盖（今天差点把网关 key 发到官方端点） */
+/** **One slot per protocol**: the official key and the gateway key never overwrite each other (today the gateway key was almost sent to the official endpoint) */
 export function credentialPath(agentDir: string, protocol: Protocol): string {
   return join(agentDir, "secrets", `pi-jev-suite-${protocol}-api-key`);
 }
 
 /**
- * 环境变量 `PI_JEV_SUITE_API_KEY` 覆盖当前协议的 key。
- * **故意不复用 `TYPESAFE_API_KEY`** —— 别的包也在读它。
+ * The `PI_JEV_SUITE_API_KEY` environment variable overrides the key for the current protocol.
+ * **Deliberately not reusing `TYPESAFE_API_KEY`** — other packages read it too.
  */
 export function resolveApiKey(
   agentDir: string,
@@ -226,13 +230,13 @@ export function writeStoredApiKey(agentDir: string, protocol: Protocol, key: str
   mkdirSync(dir, { recursive: true, mode: SECRET_DIRECTORY_MODE });
   const file = credentialPath(agentDir, protocol);
   writeFileSync(file, `${key.trim()}\n`, { mode: SECRET_FILE_MODE });
-  // writeFile 的 mode 只在创建时生效，显式再 chmod 一次
+  // writeFile's mode only applies on creation, so chmod again explicitly
   chmodSync(file, SECRET_FILE_MODE);
 }
 
-// ---------------------------------------------------------------- 记账
+// ---------------------------------------------------------------- Metering
 
-/** 官方定价：$0.042 / 1M 输入 token，输出不计费 */
+/** Official pricing: $0.042 per 1M input tokens; output is not billed */
 export const INPUT_USD_PER_TOKEN = 0.042 / 1_000_000;
 
 export interface UsageRecord {
@@ -255,7 +259,7 @@ export function usagePath(agentDir: string): string {
   return join(agentDir, "pi-jev-suite-usage.json");
 }
 
-/** 计数器按 **UTC 日期**归零（简单、可预测；本地时区的日界线会随旅行跳变） */
+/** The counter resets by **UTC date** (simple and predictable; a local-timezone day boundary shifts as you travel) */
 export function utcDate(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
@@ -279,17 +283,17 @@ export function loadUsage(agentDir: string, nowMs: number): UsageRecord {
   };
 }
 
-/** 记账失败绝不影响判定本身，所以静默吞掉（最坏情况只是当日计数不准） */
+/** A metering failure must never affect the judgment itself, so it is swallowed silently (worst case the day's count is slightly off) */
 export function saveUsage(agentDir: string, usage: UsageRecord): void {
   try {
     mkdirSync(agentDir, { recursive: true });
     writeFileSync(usagePath(agentDir), `${JSON.stringify(usage, null, 2)}\n`);
   } catch {
-    /* 记账是尽力而为 */
+    /* metering is best-effort */
   }
 }
 
-// ---------------------------------------------------------------- 日志
+// ---------------------------------------------------------------- Logging
 
 export interface AskLogRecord {
   readonly kind: "ask";
@@ -315,6 +319,10 @@ export interface DecisionLogRecord {
   readonly layer: string;
   readonly status: "allowed" | "blocked";
   readonly reason: string;
+  /** A redacted command/path snippet — the log must be able to explain a judgment, otherwise incidents cannot be traced */
+  readonly summary?: string;
+  /** The reason a layer was reached (i.e. the matched_policy_reasons sent to Jev) */
+  readonly policyReasons?: readonly string[];
   readonly decidingRule?: string;
   readonly conditions?: readonly {
     readonly id: string;
@@ -326,29 +334,29 @@ export interface DecisionLogRecord {
   readonly transport: string;
 }
 
-/** 同一个 jsonl 文件里两种记录：core 记每次提问，门禁记每次判定 */
+/** Two record kinds in one jsonl file: the core logs each ask, the gate logs each decision */
 export type LogRecord = AskLogRecord | DecisionLogRecord;
 
 export function logPath(agentDir: string): string {
   return join(agentDir, "pi-jev-suite-log.jsonl");
 }
 
-/** 写日志失败也不能影响判定 */
+/** A log write failure must not affect the judgment */
 export function appendLog(agentDir: string, record: LogRecord): void {
   try {
     mkdirSync(agentDir, { recursive: true });
     appendFileSync(logPath(agentDir), `${JSON.stringify(record)}\n`);
   } catch {
-    /* 日志是尽力而为 */
+    /* logging is best-effort */
   }
 }
 
-// ---------------------------------------------------------------- 读回日志
+// ---------------------------------------------------------------- Reading the log back
 
 /**
- * 读回日志（**容忍坏行**：文件可能被旧版本写过、也可能被手工改过）。
- * `limit` 取的是**尾部**条数，最近的排在最后。返回原始 JSON 对象而不做类型断言 ——
- * 读的一方自己用 typeof 逐个字段确认。
+ * Read the log back (**tolerates bad lines**: the file may have been written by an older version
+ * or edited by hand). `limit` takes the **tail** of the records, most recent last. Returns raw
+ * JSON objects without asserting types — the reader confirms each field with typeof.
  */
 export function readLogRecords(agentDir: string, limit = 5000): JevJsonObject[] {
   let text: string;
@@ -365,13 +373,13 @@ export function readLogRecords(agentDir: string, limit = 5000): JevJsonObject[] 
       const parsed: unknown = JSON.parse(line);
       if (isJsonRecord(parsed)) out.push(parsed);
     } catch {
-      /* 坏行跳过 */
+      /* skip bad lines */
     }
   }
   return out;
 }
 
-// ---------------------------------------------------------------- 客户端
+// ---------------------------------------------------------------- Client
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -385,23 +393,23 @@ export interface ClientOptions {
   readonly maxRetries?: number;
   readonly maxStateCharacters?: number;
   readonly budget?: { readonly requestsPerDay: number; readonly usdPerDay: number };
-  /** 探测 / key 验证用：不读也不写用量与日志，不占当日配额 */
+  /** For probes / key verification: neither reads nor writes usage or logs, and does not count against the daily quota */
   readonly ephemeral?: boolean;
   readonly fetch?: FetchLike;
   readonly now?: () => number;
 }
 
 export interface JevClient {
-  /** 一次批量提问（Jev 并行回答所有问题，所以永远合成一个请求） */
+  /** One batched ask (Jev answers all questions in parallel, so it is always a single request) */
   ask(request: AskRequest): Promise<AskResult>;
-  /** 当前 UTC 日的用量 */
+  /** Usage for the current UTC day */
   usage(): UsageRecord;
   readonly transport: string;
 }
 
 export const DEFAULT_TIMEOUT_MS = 4000;
 export const DEFAULT_MAX_RETRIES = 1;
-/** 上游同值：超过就不发，直接算 state_too_large */
+/** Same value as upstream: anything larger is not sent and is reported as state_too_large */
 export const DEFAULT_MAX_STATE_CHARACTERS = 120_000;
 
 function isTimeoutError(error: unknown): boolean {
@@ -426,7 +434,7 @@ export function createJevClient(options: ClientOptions): JevClient {
     ...(status === undefined ? {} : { status }),
   });
 
-  // 失败路径的日志：只记结构，不记 state（state 里可能有命令文本）。写日志失败也不能影响判定。
+  // Logging on the failure path: only the structure, never the state (the state may contain command text). A log write failure must not affect the judgment.
   const logFailure = (
     request: AskRequest,
     keys: readonly string[],
@@ -464,7 +472,7 @@ export function createJevClient(options: ClientOptions): JevClient {
       const elapsed = (): number => Math.max(0, now() - started);
 
       if (keys.length === 0) {
-        return failure("unknown", "没有问任何问题", elapsed());
+        return failure("unknown", "no questions were asked", elapsed());
       }
 
       const payload = JSON.stringify({
@@ -473,19 +481,19 @@ export function createJevClient(options: ClientOptions): JevClient {
         questions: request.questions,
       });
       if (payload.length > maxStateCharacters) {
-        return failure("state_too_large", `${payload.length} > ${maxStateCharacters} 字符`, elapsed());
+        return failure("state_too_large", `${payload.length} > ${maxStateCharacters} chars`, elapsed());
       }
 
-      // 配额先看再用：超了就不发请求，也不记账
+      // Check the quota before using it: when exceeded, neither send the request nor meter it
       const before =
         options.ephemeral === true ? EMPTY_USAGE(utcDate(started)) : loadUsage(options.agentDir, started);
       if (before.requests >= budget.requestsPerDay) {
-        return failure("budget_exceeded", `今日请求数 ${before.requests} 已达上限 ${budget.requestsPerDay}`, elapsed());
+        return failure("budget_exceeded", `daily request count ${before.requests} has reached the limit ${budget.requestsPerDay}`, elapsed());
       }
       if (before.usd >= budget.usdPerDay) {
         return failure(
           "budget_exceeded",
-          `今日估算花费 $${before.usd.toFixed(4)} 已达上限 $${budget.usdPerDay}`,
+          `estimated daily spend $${before.usd.toFixed(4)} has reached the limit $${budget.usdPerDay}`,
           elapsed(),
         );
       }
@@ -504,7 +512,7 @@ export function createJevClient(options: ClientOptions): JevClient {
             signal,
           });
         } catch (error) {
-          // 调用方取消是控制流，不是判定
+          // caller cancellation is control flow, not a verdict
           if (request.signal?.aborted === true) throw error;
           const reason: AskFailureReason = isTimeoutError(error) ? "timeout" : "network";
           if (lastAttempt) {
@@ -516,7 +524,7 @@ export function createJevClient(options: ClientOptions): JevClient {
         }
 
         if (!response.ok) {
-          // 上游 SDK 会重试瞬时状态码；这里自己来
+          // the upstream SDK retries transient statuses; this transport does it itself
           if (!lastAttempt && (response.status === 429 || response.status >= 500)) continue;
           const detail = describeStatus(response.status);
           logFailure(request, keys, { reason: "http", detail }, elapsed());
@@ -581,21 +589,23 @@ export function createJevClient(options: ClientOptions): JevClient {
   };
 }
 
-// ---------------------------------------------------------------- key 验证
+// ---------------------------------------------------------------- Key verification
 
 export type KeyVerification =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: "invalid" | "unreachable"; readonly detail: string };
 
 /**
- * 验证 key：**发一个丢弃用的真实问题**，而不是列举模型。
+ * Verify a key by **asking one throwaway real question**, not by listing models.
  *
- * 列举模型在网关上是错的：代理用 OpenAI 形状的 `{data:[…]}` 回答 `/v1/models`，
- * 而 SDK 的 models 调用会因形状不符抛非 APIError → 被判成 unreachable →
- * **一个完全正确的网关 key 根本存不下来**（今天卡在这上面）。
- * 打真实端点既更严格，也正好走一遍判定要走的路径。两种协议都这么做 → 一套代码。
+ * Listing models is wrong on a gateway: a proxy answers `/v1/models` with the OpenAI shape
+ * `{data:[…]}`, and the SDK's models call rejects that with a non-APIError -> reported as
+ * unreachable -> **a perfectly valid gateway key could never be stored** (this is what was
+ * blocking us today). Hitting the real endpoint is both stricter and exercises the exact path a
+ * judgment will take. Both protocols do this, so it is one code path.
  *
- * 只有 401/403 是在说 key 的问题；其它状态、超时、连不上、身体读不出来都只说"没问到"。
+ * Only 401/403 say anything about the key; any other status, a timeout, a dead socket, or an
+ * unreadable body only means "we could not reach it".
  */
 export async function verifyKey(options: {
   readonly protocol: Protocol;
@@ -612,8 +622,8 @@ export async function verifyKey(options: {
     model: options.model ?? DEFAULT_MODEL_BY_PROTOCOL[options.protocol],
     apiKey: options.apiKey,
     timeoutMs: options.timeoutMs ?? 10_000,
-    maxRetries: 0, // 验 key 不重试被拒的凭据
-    ephemeral: true, // 探测不占配额、不写日志
+    maxRetries: 0, // key verification never retries a rejected credential
+    ephemeral: true, // a probe neither counts against the quota nor writes logs
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
   });
 

@@ -1,18 +1,19 @@
 /**
  * pi-jev-suite / config.ts
  *
- * 配置 schema + 预设 + 加载 / 合并 / 校验。
+ * Config schema + presets + load / merge / validate.
  *
- * 设计约定（见 PLAN.md §4）：
- *   - 规则全部在配置里，代码里只有机制
- *   - 校验失败**丢弃该字段并记 warning**，不猜、不默认（上游教训：静默默认会掩盖配置错误）
- *   - preset 展开成 protocol + baseUrl + model；显式写的字段覆盖 preset
- *   - 项目级配置只在 project trusted 时生效
+ * Design contract (see PLAN.md §4):
+ *   - all rules live in config, code only carries the mechanics
+ *   - on validation failure, **drop that field and record a warning**; never guess, never silently
+ *     default (upstream lesson: a silent default hides config mistakes)
+ *   - a preset expands into protocol + baseUrl + model; explicitly written fields override the preset
+ *   - a project-level config only applies when the project is trusted
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// ---------------------------------------------------------------- 接入方式
+// ---------------------------------------------------------------- providers
 
 export type Protocol = "systemone" | "decisions";
 
@@ -24,9 +25,10 @@ export function protocolPath(p: Protocol): string {
 }
 
 /**
- * 预设把踩过的坑编进来：
- *   - gateway 只认 `typesafe/jev-1.13`（jev-latest → 403，typesafe/jev-latest → 400）
- *   - 两种协议的响应体同形，所以解析器共用，只有 URL / key 验证 / model 名不同
+ * Presets encode pitfalls already hit:
+ *   - gateway only accepts `typesafe/jev-1.13` (jev-latest → 403, typesafe/jev-latest → 400)
+ *   - the two protocols return identically-shaped bodies, so one parser is shared; only the
+ *     URL / key verification / model name differ
  */
 export const PRESETS = {
   typesafe: { protocol: "systemone", baseUrl: "https://api.typesafe.ai", model: "jev-1.13.0" },
@@ -37,7 +39,7 @@ export const PRESETS = {
 export type PresetName = keyof typeof PRESETS;
 export const PRESET_NAMES = Object.keys(PRESETS) as PresetName[];
 
-/** 每种协议在各自默认端点上的 model 名（验证 key 这种拿不到配置的场景用） */
+/** The model name each protocol uses on its default endpoint (for key verification, where no config is available). */
 export const DEFAULT_MODEL_BY_PROTOCOL: Record<Protocol, string> = {
   systemone: PRESETS.typesafe.model,
   decisions: PRESETS.gateway.model,
@@ -60,7 +62,7 @@ export interface ResolvedProvider {
   maxRetries: number;
 }
 
-// ---------------------------------------------------------------- 配置形状
+// ---------------------------------------------------------------- config shape
 
 export type RecordMode = "full" | "status" | "off";
 export type UnavailableMode = "degraded" | "block";
@@ -72,18 +74,18 @@ export interface GateConfig {
   deny: string[];
   extraReadOnly: string[];
   transparentWrappers: string[];
-  /** 附加保护模式；内建的保护表在 policy.ts，**不能通过配置取消** */
+  /** Additional protected-path patterns; the built-in table lives in policy.ts and **cannot be disabled via config**. */
   protectedPaths: string[];
 }
 
 export interface ToolsConfig {
   provider?: ProviderConfig;
-  /** jev_evaluate / ask_advisor 是否启用 */
+  /** Whether jev_evaluate / ask_advisor are enabled */
   enabled: boolean;
 }
 
 export interface Thresholds {
-  /** 放行阈值：模型给出的「该放行」概率 ≥ 它才放，否则拦（含说不清的情况） */
+  /** Allow threshold: the model's "should allow" probability must be >= this to pass, otherwise deny (including when unclear). */
   allow: number;
 }
 
@@ -108,7 +110,7 @@ export interface SuiteConfig {
   onUnavailable: OnUnavailable;
 }
 
-// ---------------------------------------------------------------- 默认值
+// ---------------------------------------------------------------- defaults
 
 export const DEFAULT_CONFIG: SuiteConfig = {
   enabled: true,
@@ -124,11 +126,13 @@ export const DEFAULT_CONFIG: SuiteConfig = {
   },
   tools: { enabled: true },
   /**
-   * 只放行**明确认为该放行**的：一个概率、一个阈值。
+   * Only allow what the model **clearly thinks should be allowed**: one probability, one threshold.
    *
-   * 0.6 是实测校准出来的起点：单条件问「这符合用户在做的任务吗」时，明确覆盖给 0.77–0.98、
-   * 没被要求给 0.06–0.15。现在三个考量折进了同一个提问，边界会往中间靠一些，
-   * 所以观察期要用 `/jev-suite stats` 看这个数的分布再定（它是唯一的旋钮）。
+   * 0.6 is the measured starting point: asking the single question "is this consistent with what
+   * the user is working on" gave 0.77–0.98 when covered and 0.06–0.15 when not. Now that three
+   * considerations are folded into one question, the boundary sits a bit more toward the middle,
+   * so during the observation window use `/jev-suite stats` to read the distribution before
+   * retuning (it is the only knob).
    */
   thresholds: {
     allow: 0.6,
@@ -136,7 +140,7 @@ export const DEFAULT_CONFIG: SuiteConfig = {
   onUnavailable: { mode: "degraded", breakerAfter: 3, cooldownMs: 60000 },
 };
 
-// ---------------------------------------------------------------- 校验边界
+// ---------------------------------------------------------------- validation bounds
 
 export const LIMITS = {
   maxPatternEntries: 200,
@@ -151,18 +155,18 @@ export const LIMITS = {
 
 export interface LoadResult {
   config: SuiteConfig;
-  /** 生效的全局配置路径 */
+  /** The effective global config path */
   globalPath: string;
-  /** 生效的项目配置路径（未 trusted 时为 null） */
+  /** The effective project config path (null when not trusted) */
   projectPath: string | null;
   warnings: string[];
 }
 
-/** JSON 边界上的取值域：任何函数只在这两个类型之间来去，不用 `unknown` 返回值 */
+/** The value domain at the JSON boundary: functions move only between these two types, never returning a bare `unknown`. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
-// ---------------------------------------------------------------- 小工具
+// ---------------------------------------------------------------- small helpers
 
 function isPlainObject(v: unknown): v is JsonObject {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -173,24 +177,24 @@ function readJson(path: string, warnings: string[]): JsonObject | null {
   try {
     text = readFileSync(path, "utf8");
   } catch {
-    return null; // 文件不存在是正常情况
+    return null; // a missing file is the normal case
   }
   try {
     const parsed: unknown = JSON.parse(text);
     if (!isPlainObject(parsed)) {
-      warnings.push(`${path}: 顶层不是 JSON 对象，已忽略`);
+      warnings.push(`${path}: top-level value is not a JSON object, ignored`);
       return null;
     }
     return parsed;
   } catch (err) {
-    warnings.push(`${path}: JSON 解析失败（${(err as Error).message}），已忽略`);
+    warnings.push(`${path}: JSON parse failed (${(err as Error).message}), ignored`);
     return null;
   }
 }
 
 /**
- * 深合并两个 JSON 对象：对象递归，其余（含数组）整体替换 ——
- * 配置里数组是"这一项的全部值"，不是追加。
+ * Deep-merge two JSON objects: objects recurse, everything else (including arrays) is replaced
+ * whole — in config an array is "the full value of this key", never appended to.
  */
 export function mergeObjects(base: JsonObject, patch: JsonObject): JsonObject {
   const out: JsonObject = { ...base };
@@ -202,9 +206,9 @@ export function mergeObjects(base: JsonObject, patch: JsonObject): JsonObject {
 }
 
 function coerceBool(v: unknown, field: string, warnings: string[], fallback: boolean): boolean {
-  if (v === undefined) return fallback; // 没写 ≠ 写错：缺字段静默用默认值
+  if (v === undefined) return fallback; // absent is not an error: a missing field silently uses the default
   if (typeof v === "boolean") return v;
-  warnings.push(`${field}: 期望 boolean，得到 ${JSON.stringify(v)}，已用默认值 ${fallback}`);
+  warnings.push(`${field}: expected boolean, got ${JSON.stringify(v)}, using default ${fallback}`);
   return fallback;
 }
 
@@ -218,7 +222,7 @@ function coerceInt(
 ): number {
   if (v === undefined) return fallback;
   if (typeof v === "number" && Number.isInteger(v) && v >= min && v <= max) return v;
-  warnings.push(`${field}: 期望 ${min}..${max} 的整数，得到 ${JSON.stringify(v)}，已用默认值 ${fallback}`);
+  warnings.push(`${field}: expected an integer in ${min}..${max}, got ${JSON.stringify(v)}, using default ${fallback}`);
   return fallback;
 }
 
@@ -231,44 +235,44 @@ function coerceEnum<T extends string>(
 ): T {
   if (v === undefined) return fallback;
   if (typeof v === "string" && (allowed as readonly string[]).includes(v)) return v as T;
-  warnings.push(`${field}: 期望 ${allowed.join(" | ")}，得到 ${JSON.stringify(v)}，已用默认值 ${fallback}`);
+  warnings.push(`${field}: expected ${allowed.join(" | ")}, got ${JSON.stringify(v)}, using default ${fallback}`);
   return fallback;
 }
 
 function coercePatterns(v: unknown, field: string, warnings: string[]): string[] {
   if (v === undefined) return [];
   if (!Array.isArray(v)) {
-    warnings.push(`${field}: 期望字符串数组，得到 ${JSON.stringify(v)}，已忽略`);
+    warnings.push(`${field}: expected an array of strings, got ${JSON.stringify(v)}, ignored`);
     return [];
   }
   const out: string[] = [];
   for (const item of v) {
     if (typeof item !== "string" || item.length === 0) {
-      warnings.push(`${field}: 跳过非字符串或空模式 ${JSON.stringify(item)}`);
+      warnings.push(`${field}: skipping non-string or empty pattern ${JSON.stringify(item)}`);
       continue;
     }
     if (item.length > LIMITS.maxPatternLength) {
-      warnings.push(`${field}: 模式过长被跳过（>${LIMITS.maxPatternLength}）：${item.slice(0, 40)}…`);
+      warnings.push(`${field}: pattern too long, skipped (>${LIMITS.maxPatternLength}): ${item.slice(0, 40)}...`);
       continue;
     }
     out.push(item);
   }
   if (out.length > LIMITS.maxPatternEntries) {
-    warnings.push(`${field}: 条目超过 ${LIMITS.maxPatternEntries}，已截断`);
+    warnings.push(`${field}: more than ${LIMITS.maxPatternEntries} entries, truncated`);
     return out.slice(0, LIMITS.maxPatternEntries);
   }
   return out;
 }
 
 function coerceThreshold(v: unknown, field: string, warnings: string[], fallback: number): number {
-  // 阈值必须保留两侧的"未明确"区间，所以只能落在 (0.5, 1]
+  // a threshold must stay in (0.5, 1]
   if (v === undefined) return fallback;
   if (typeof v === "number" && Number.isFinite(v) && v > LIMITS.minThreshold && v <= LIMITS.maxThreshold) {
     return v;
   }
   warnings.push(
-    `${field}: 期望 ${LIMITS.minThreshold} < 阈值 <= ${LIMITS.maxThreshold}，` +
-      `得到 ${JSON.stringify(v)}，已用默认值 ${fallback}`,
+    `${field}: expected ${LIMITS.minThreshold} < threshold <= ${LIMITS.maxThreshold}, ` +
+      `got ${JSON.stringify(v)}, using default ${fallback}`,
   );
   return fallback;
 }
@@ -276,7 +280,7 @@ function coerceThreshold(v: unknown, field: string, warnings: string[], fallback
 function coerceProvider(v: unknown, field: string, warnings: string[]): ProviderConfig | undefined {
   if (v === undefined) return undefined;
   if (!isPlainObject(v)) {
-    warnings.push(`${field}: 期望对象，已忽略`);
+    warnings.push(`${field}: expected an object, ignored`);
     return undefined;
   }
   const out: ProviderConfig = {};
@@ -285,7 +289,7 @@ function coerceProvider(v: unknown, field: string, warnings: string[]): Provider
       out.preset = v.preset as PresetName;
     } else {
       warnings.push(
-        `${field}.preset: 未知预设 ${JSON.stringify(v.preset)}（可用：${PRESET_NAMES.join(", ")}），已忽略`,
+        `${field}.preset: unknown preset ${JSON.stringify(v.preset)} (available: ${PRESET_NAMES.join(", ")}), ignored`,
       );
     }
   }
@@ -296,12 +300,12 @@ function coerceProvider(v: unknown, field: string, warnings: string[]): Provider
     if (typeof v.baseUrl === "string" && /^https?:\/\//.test(v.baseUrl)) {
       out.baseUrl = v.baseUrl.replace(/\/+$/, "");
     } else {
-      warnings.push(`${field}.baseUrl: 期望 http(s) URL，得到 ${JSON.stringify(v.baseUrl)}，已忽略`);
+      warnings.push(`${field}.baseUrl: expected an http(s) URL, got ${JSON.stringify(v.baseUrl)}, ignored`);
     }
   }
   if (v.model !== undefined) {
     if (typeof v.model === "string" && v.model.length > 0) out.model = v.model;
-    else warnings.push(`${field}.model: 期望非空字符串，已忽略`);
+    else warnings.push(`${field}.model: expected a non-empty string, ignored`);
   }
   if (v.timeoutMs !== undefined) {
     out.timeoutMs = coerceInt(
@@ -319,7 +323,7 @@ function coerceProvider(v: unknown, field: string, warnings: string[]): Provider
   return out;
 }
 
-/** 展开 preset：显式字段优先；两者都没有时用官方 TypeSafe 预设兜底 */
+/** Expand a preset: explicit fields win; when neither is given, fall back to the official TypeSafe preset. */
 export function resolveProvider(cfg: ProviderConfig | undefined, budgeted?: Partial<ResolvedProvider>): ResolvedProvider {
   const merged: ProviderConfig = { ...DEFAULT_CONFIG.provider, ...(cfg ?? {}) };
   const preset = merged.preset ? PRESETS[merged.preset] : undefined;
@@ -333,7 +337,7 @@ export function resolveProvider(cfg: ProviderConfig | undefined, budgeted?: Part
   };
 }
 
-// ---------------------------------------------------------------- 加载
+// ---------------------------------------------------------------- loading
 
 export interface LoadOptions {
   agentDir: string;
@@ -342,8 +346,8 @@ export interface LoadOptions {
 }
 
 /**
- * 读全局 + 项目配置，深合并，校验，返回可用配置。
- * 任何一项非法都只影响那一项（丢弃 + warning），不让整个门禁起不来。
+ * Read the global + project config, deep-merge, validate, and return a usable config.
+ * Any invalid field only affects itself (dropped + warning); one bad value never takes the whole gate down.
  */
 export function loadConfig(opts: LoadOptions): LoadResult {
   const warnings: string[] = [];

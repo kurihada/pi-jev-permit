@@ -1,12 +1,13 @@
 /**
- * pi-jev-suite / tools.ts —— 消费方 2+3：`jev_evaluate` 与 `ask_advisor`
+ * pi-jev-suite / tools.ts — consumers 2+3: `jev_evaluate` and `ask_advisor`
  *
- * 两者共用**同一个 core 调用**，区别只有问题集：evaluate 由 agent 自己出题，
- * advisor 是预设的一组校准问题。没有第二套传输。
+ * Both share the same core call; the only difference is the question set: evaluate lets
+ * the agent ask its own questions, advisor is a fixed set of calibrated questions.
+ * There is no second transport.
  *
- * 两个工具的描述里都写死了同一句话：**返回值只是信息，不构成授权** ——
- * agent 不能拿"Jev 说可以"去让下一次工具调用免于门禁判定；而且这两个工具
- * 本身就是普通工具调用，自己也要过门禁。
+ * Both tool descriptions hardcode the same sentence: the result is information, not
+ * authorization — the agent cannot use "Jev said yes" to exempt a later tool call from
+ * the gate, and both tools are ordinary tool calls that must pass the gate themselves.
  */
 import { Type } from "typebox";
 import {
@@ -26,7 +27,7 @@ export interface EvaluateQuestionInput {
   readonly criteria?: { readonly true?: string; readonly false?: string };
 }
 
-/** 一次最多问这些个（core 还有 state 字符上限，两层一起挡调用方塞爆请求） */
+/** At most this many questions per call (the core also caps state characters; both guards stop a caller from stuffing the request) */
 export const MAX_EVALUATE_QUESTIONS = 32;
 
 export function buildEvaluateQuestions(items: readonly EvaluateQuestionInput[]): Record<string, NoulQuestion> {
@@ -42,10 +43,10 @@ export function buildEvaluateQuestions(items: readonly EvaluateQuestionInput[]):
 }
 
 /**
- * 给模型看的文本。
+ * Text shown to the model.
  *
- * 失败时也要给一句能读懂的话，并且明确"这不是没问题" ——
- * 否则一个失败的调用会被读成"没有反对意见"。
+ * On failure it still returns a readable sentence, and spells out that "this is not no
+ * objection" — otherwise a failed call reads as "no objection was raised".
  */
 export function formatEvaluateResult(result: AskResult): string {
   if (!result.ok) {
@@ -62,20 +63,21 @@ export function formatEvaluateResult(result: AskResult): string {
 }
 
 /**
- * 组装状态。
+ * Assemble the state.
  *
- * 调用方给的 state 原样透传（那是它自己要问的东西），但**先过一遍脱敏** ——
- * 免得把凭据顺手塞进请求里。
+ * A caller-provided state is passed through as-is (it is the thing being asked about),
+ * but it goes through redaction first, so credentials are not accidentally stuffed into the request.
  */
 export function buildToolState(params: Record<string, unknown>): JevState {
   const provided = params.state;
   if (provided && typeof provided === "object" && !Array.isArray(provided) && "value" in provided) {
-    // 走一趟 JSON 是为了让脱敏作用到每个字符串值。工具参数来自模型，理论上都可序列化，
-    // 但坏输入不能让工具抛出去 —— 序列化失败就用下面的 context 兜底。
+    // Round-tripping through JSON applies redaction to every string value. Tool params come
+    // from the model and should be serializable, but bad input must not throw the tool —
+    // if serialization fails, fall back to the context below.
     try {
       return JSON.parse(redact(JSON.stringify(provided))) as JevState;
     } catch {
-      /* 落回 context */
+      /* fall back to context */
     }
   }
   const context = typeof params.context === "string" ? redact(params.context) : "";
@@ -85,8 +87,9 @@ export function buildToolState(params: Record<string, unknown>): JevState {
 // ---------------------------------------------------------------- ask_advisor
 
 /**
- * 顾问的预设问题。三个都是「有麻烦」方向的陈述，所以 **p 高 = 麻烦可能存在**。
- * 用一组固定问题而不是让 agent 临场编，是为了让读数可比、阈值能调。
+ * The advisor's preset questions. All three are phrased in the "there is trouble" direction,
+ * so a high p means trouble is likely. A fixed question set (rather than the agent improvising
+ * one) keeps the readings comparable and the thresholds tunable.
  */
 export const ADVISOR_QUESTIONS: readonly { readonly key: string; readonly question: string }[] = [
   {
@@ -141,7 +144,7 @@ export function summarizeAdvice(
   return [...rows, "", verdict, "", "Information only, not authorization."].join("\n");
 }
 
-// ---------------------------------------------------------------- pi 接线
+// ---------------------------------------------------------------- pi wiring
 
 export interface ToolResultLike {
   readonly content: { readonly type: "text"; readonly text: string }[];
@@ -167,7 +170,7 @@ export interface ToolApiLike {
 }
 
 export interface ToolsWiring {
-  /** 每次调用都重新取 client：配置或 key 变了立刻生效 */
+  /** Resolve a fresh client on every call: a config or key change takes effect immediately */
   readonly makeClient: () => JevClient | null;
 }
 

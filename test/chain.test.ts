@@ -1,5 +1,5 @@
 /**
- * 切段 / 归一化 / 分词 / 模式匹配 —— 纯函数，不需要 pi、不需要网络。
+ * Splitting / normalization / tokenizing / pattern matching -- pure functions, no pi, no network.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -7,7 +7,7 @@ import { matchCommandPattern, normalizeSegment, splitChain, tokenize } from "../
 
 // ---------------------------------------------------------------- splitChain
 
-test("splitChain：按 ; && || | & 换行 切段", () => {
+test("splitChain: split on ; && || | & and newlines", () => {
   assert.deepEqual(splitChain("ls -la").map((s) => s.raw), ["ls -la"]);
   assert.deepEqual(splitChain("a; b").map((s) => s.raw), ["a", "b"]);
   assert.deepEqual(splitChain("a && b").map((s) => s.raw), ["a", "b"]);
@@ -17,25 +17,25 @@ test("splitChain：按 ; && || | & 换行 切段", () => {
   assert.deepEqual(splitChain("   ").map((s) => s.raw), []);
 });
 
-test("splitChain：引号内的分隔符不切", () => {
+test("splitChain: separators inside quotes are not split", () => {
   assert.deepEqual(splitChain(`echo "a;b"`).map((s) => s.raw), [`echo "a;b"`]);
   assert.deepEqual(splitChain(`echo 'a|b'`).map((s) => s.raw), [`echo 'a|b'`]);
   assert.deepEqual(splitChain(`echo "a\\"b"`).map((s) => s.raw), [`echo "a\\"b"`]);
 });
 
-test("splitChain：2>&1 / >&2 是 fd 复制，不切段", () => {
+test("splitChain: 2>&1 / >&2 is an fd dup, not a split", () => {
   assert.deepEqual(splitChain("ls -la 2>&1").map((s) => s.raw), ["ls -la 2>&1"]);
   assert.deepEqual(splitChain("foo >&2").map((s) => s.raw), ["foo >&2"]);
-  // 真正的后台符仍然切段
+  // a real background operator still splits
   assert.deepEqual(splitChain("a & b").map((s) => s.raw), ["a", "b"]);
 });
 
-test("splitChain：命令替换 / 反引号 / heredoc / 子 shell / 不闭合引号 → taint", () => {
+test("splitChain: command substitution / backtick / heredoc / subshell / unterminated quote -> taint", () => {
   for (const cmd of ["echo $(pwd)", "echo `pwd`", "cat <<EOF", "(cd /x && ls)", "echo 'unclosed"]) {
     const segs = splitChain(cmd);
     assert.ok(
       segs.length === 0 || segs.every((s) => s.tainted),
-      `应标记 tainted: ${cmd}`,
+      `should be tainted: ${cmd}`,
     );
   }
   assert.equal(splitChain("ls -la").every((s) => s.tainted), false);
@@ -43,7 +43,7 @@ test("splitChain：命令替换 / 反引号 / heredoc / 子 shell / 不闭合引
 
 // ---------------------------------------------------------------- normalizeSegment
 
-test("normalizeSegment：纯赋值段是惰性的（rtk 前缀的解）", () => {
+test("normalizeSegment: a pure assignment segment is inert (the rtk-prefix fix)", () => {
   const r = normalizeSegment("export RTK_DB_PATH='/var/folders/x/history.db'", ["rtk"]);
   assert.equal(r.lazy, true);
   assert.equal(r.command, "");
@@ -51,28 +51,28 @@ test("normalizeSegment：纯赋值段是惰性的（rtk 前缀的解）", () => 
   assert.equal(normalizeSegment("FOO=", []).lazy, true);
 });
 
-test("normalizeSegment：含动态内容的赋值不是惰性，且标 unsafe", () => {
+test("normalizeSegment: an assignment with dynamic content is not inert, and is marked unsafe", () => {
   for (const seg of ["export X=$(rm -rf /)", "X=`rm -rf /`", "FOO='a;rm -rf /'", "F=1|2", "V=a>b"]) {
     const r = normalizeSegment(seg, []);
-    assert.ok(r.unsafe || !r.lazy, `不应是安全惰性赋值: ${seg}`);
+    assert.ok(r.unsafe || !r.lazy, `should not be a safe inert assignment: ${seg}`);
   }
 });
 
-test("normalizeSegment：剥掉透明包装器", () => {
+test("normalizeSegment: strips transparent wrappers", () => {
   assert.equal(normalizeSegment("rtk ls -l /tmp", ["rtk"]).command, "ls -l /tmp");
   assert.equal(normalizeSegment("rtk rtk git status", ["rtk"]).command, "git status");
-  // 没声明为透明包装器的，原样保留（默认只认 rtk）
+  // a name not declared as a transparent wrapper is kept as-is (only rtk by default)
   assert.equal(normalizeSegment("faker ls", ["rtk"]).command, "faker ls");
 });
 
-test("normalizeSegment：前置赋值 + 真命令（FOO=1 cmd）", () => {
+test("normalizeSegment: leading assignment + a real command (FOO=1 cmd)", () => {
   assert.equal(normalizeSegment("FOO=1 ls -la", []).command, "ls -la");
   assert.equal(normalizeSegment("export FOO=1 ls -la", []).command, "ls -la");
 });
 
-// ---------------------------------------------------------------- tokenize / 匹配
+// ---------------------------------------------------------------- tokenize / matching
 
-test("tokenize：标出引号开头的 token（引号开头的不可能是选项）", () => {
+test("tokenize: marks tokens that start with a quote (a quoted token cannot be an option)", () => {
   const t = tokenize(`rm -rf "$d/pi-warden.md"`);
   assert.deepEqual(
     t.map((x) => [x.text, x.quoted]),
@@ -84,11 +84,11 @@ test("tokenize：标出引号开头的 token（引号开头的不可能是选项
   );
 });
 
-test("matchCommandPattern：锚定、* 跨空格、其余字符转义", () => {
+test("matchCommandPattern: anchored, * spans spaces, everything else escaped", () => {
   assert.equal(matchCommandPattern("ls *", "ls -la /tmp"), true);
-  assert.equal(matchCommandPattern("ls *", "lsof"), false, "必须锚定");
+  assert.equal(matchCommandPattern("ls *", "lsof"), false, "must be anchored");
   assert.equal(matchCommandPattern("git -C * status", "git -C /a/b status"), true);
-  assert.equal(matchCommandPattern("ls", "ls -la"), false, "不带 * 就是精确匹配");
-  assert.equal(matchCommandPattern("a.b", "axb"), false, "点号要转义");
+  assert.equal(matchCommandPattern("ls", "ls -la"), false, "without * it is an exact match");
+  assert.equal(matchCommandPattern("a.b", "axb"), false, "the dot must be escaped");
   assert.equal(matchCommandPattern("*rm -rf*", "cd /x && rm -rf y"), true);
 });

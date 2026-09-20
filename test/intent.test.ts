@@ -1,9 +1,10 @@
 /**
- * 意图提取：窗口与截断方向。
+ * Intent extraction: the window and its truncation direction.
  *
- * 这里 pin 的是一个**上线实测抓到的 bug**：超预算时原来是保留最旧、丢掉最新
- * （join 后是从旧到新，从头截），于是一场长对话里最近的授权会被裁掉 ——
- * 「用户刚说授权跑验证」却被判成 p=0.23 没有覆盖。上游 intent.ts 同样如此。
+ * This pins a bug caught by a live run: when over budget the original code kept the oldest and
+ * dropped the newest (after the join the text is oldest-first, and it truncated from the front),
+ * so in a long conversation the most recent authorization was cut off — "the user just said go
+ * run the verification" was judged p=0.23, not covered. The upstream intent.ts has the same bug.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -13,22 +14,22 @@ function userMessage(content: string): unknown {
   return { type: "message", message: { role: "user", content } };
 }
 
-test("意图：只取 user 消息，跳过扩展注入、assistant 与工具输出", () => {
+test("intent: only user messages, skipping extension-injected, assistant and tool output", () => {
   const branch = [
-    userMessage("第一条请求"),
-    { type: "message", message: { role: "assistant", content: "我不算数" } },
-    { type: "message", message: { role: "user", content: "扩展注入", customType: "plan-mode" } },
-    { type: "tool_result", content: "工具输出不算数" },
-    userMessage("最后一条请求"),
+    userMessage("first request"),
+    { type: "message", message: { role: "assistant", content: "I don't count" } },
+    { type: "message", message: { role: "user", content: "extension-injected", customType: "plan-mode" } },
+    { type: "tool_result", content: "tool output doesn't count" },
+    userMessage("last request"),
   ];
-  assert.equal(extractRecentIntent(branch), "第一条请求\n\n最后一条请求");
+  assert.equal(extractRecentIntent(branch), "first request\n\nlast request");
 });
 
-test("意图：分支为空时返回空串（调用方自己补占位文本）", () => {
+test("intent: an empty branch returns an empty string (the caller fills the placeholder)", () => {
   assert.equal(extractRecentIntent([]), "");
 });
 
-test("意图：超预算时丢最旧的整条消息，最新那条必须在", () => {
+test("intent: over budget, drop the oldest whole messages and keep the newest", () => {
   const filler = "x".repeat(DEFAULT_INTENT_OPTIONS.maxMessageChars - 4);
   const branch = Array.from({ length: DEFAULT_INTENT_OPTIONS.maxMessages }, (_value, index) =>
     userMessage(`${filler} #${index}`),
@@ -37,15 +38,15 @@ test("意图：超预算时丢最旧的整条消息，最新那条必须在", ()
   const intent = extractRecentIntent(branch);
   const newest = DEFAULT_INTENT_OPTIONS.maxMessages - 1;
 
-  assert.ok(intent.includes(`#${newest}`), "最新一条必须还在（否则长对话里最近的授权会被裁掉）");
-  assert.ok(!intent.includes("#0 "), "最旧一条应当被丢掉");
-  assert.ok(intent.length <= DEFAULT_INTENT_OPTIONS.maxTotalChars, "总长不超预算");
+  assert.ok(intent.includes(`#${newest}`), "the newest must still be there (otherwise a long conversation would cut off the most recent authorization)");
+  assert.ok(!intent.includes("#0 "), "the oldest should be dropped");
+  assert.ok(intent.length <= DEFAULT_INTENT_OPTIONS.maxTotalChars, "total length stays within budget");
 
   const kept = intent.split("\n\n").length;
-  assert.ok(kept >= 1 && kept < DEFAULT_INTENT_OPTIONS.maxMessages, `保留 ${kept} 条，应当是尾部若干条`);
+  assert.ok(kept >= 1 && kept < DEFAULT_INTENT_OPTIONS.maxMessages, `kept ${kept}, should be the trailing few`);
 });
 
-test("意图：没超预算时一条不丢", () => {
-  const branch = [userMessage("短的"), userMessage("也很短")];
-  assert.equal(extractRecentIntent(branch), "短的\n\n也很短");
+test("intent: under budget, nothing is dropped", () => {
+  const branch = [userMessage("short"), userMessage("also short")];
+  assert.equal(extractRecentIntent(branch), "short\n\nalso short");
 });
