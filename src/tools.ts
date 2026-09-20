@@ -49,15 +49,15 @@ export function buildEvaluateQuestions(items: readonly EvaluateQuestionInput[]):
  */
 export function formatEvaluateResult(result: AskResult): string {
   if (!result.ok) {
-    return `Jev 没能回答（${result.reason}）：${result.detail}\n这不是「没问题」，只是没有答案。`;
+    return `Jev could not answer (${result.reason}): ${result.detail}\nThis is not "no objection" — it is no answer.`;
   }
   const rows = Object.entries(result.answers).map(([key, p]) => `  ${key} = ${p.toFixed(3)}`);
   return [
-    "概率（1 = 条件明确成立，0 = 明确不成立，中间值 = 说不清）：",
+    "Probabilities (1 = condition clearly holds, 0 = clearly does not, in between = unclear):",
     ...rows,
     "",
-    "这只是信息，不构成任何授权：它不会让下一次工具调用免于门禁判定。",
-    `模型：${result.model}，输入 ${result.inputTokens} token。`,
+    "Information only, not authorization: it does not exempt any later tool call from the gate.",
+    `Model: ${result.model}, ${result.inputTokens} input tokens.`,
   ].join("\n");
 }
 
@@ -106,9 +106,9 @@ export const ADVISOR_QUESTIONS: readonly { readonly key: string; readonly questi
 ];
 
 export const ADVISOR_LABELS: Readonly<Record<string, string>> = {
-  blind_spot: "方案有明显缺陷",
-  misread_request: "可能理解错了需求",
-  should_stop_and_ask: "应该先停下来问一句",
+  blind_spot: "the plan has a real defect",
+  misread_request: "the request may be misread",
+  should_stop_and_ask: "better to stop and ask first",
 };
 
 export const ADVISOR_ALERT_THRESHOLD = 0.6;
@@ -132,13 +132,13 @@ export function summarizeAdvice(
     if (typeof p !== "number" || !Number.isFinite(p)) continue;
     const alert = p >= threshold;
     if (alert) raised.push(ADVISOR_LABELS[item.key] ?? item.key);
-    rows.push(`  ${alert ? "⚠" : "·"} ${ADVISOR_LABELS[item.key] ?? item.key}：${p.toFixed(3)}`);
+    rows.push(`  ${alert ? "⚠" : "·"} ${ADVISOR_LABELS[item.key] ?? item.key}: ${p.toFixed(3)}`);
   }
   const verdict =
     raised.length === 0
-      ? "没有明显信号，可以继续。"
-      : `有信号：${raised.join("、")} —— 先处理掉概率最高的那条，或者直接问用户。`;
-  return [...rows, "", verdict, "", "这只是信息，不构成授权。"].join("\n");
+      ? "No clear signal — carry on."
+      : `Signal raised: ${raised.join(", ")} — deal with the highest one first, or ask the user.`;
+  return [...rows, "", verdict, "", "Information only, not authorization."].join("\n");
 }
 
 // ---------------------------------------------------------------- pi 接线
@@ -205,7 +205,7 @@ export function registerTools(pi: ToolApiLike, wiring: ToolsWiring): void {
     async execute(_toolCallId, params, signal) {
       const client = wiring.makeClient();
       if (client === null) {
-        return text("没有可用的 Jev key。先在 pi 里跑 `/jev-suite login`。");
+        return text("No usable Jev key. Run `/jev-suite login` first.");
       }
       const raw = Array.isArray(params.questions) ? params.questions : [];
       const items: EvaluateQuestionInput[] = raw
@@ -214,7 +214,7 @@ export function registerTools(pi: ToolApiLike, wiring: ToolsWiring): void {
         .filter((item) => item.key.length > 0 && item.question.length > 0);
       const questions = buildEvaluateQuestions(items);
       if (Object.keys(questions).length === 0) {
-        return text("至少要问一个带 key 与 question 的问题。");
+        return text("At least one question needs both a key and a question text.");
       }
 
       const result = await client.ask({
@@ -247,18 +247,18 @@ export function registerTools(pi: ToolApiLike, wiring: ToolsWiring): void {
     async execute(_toolCallId, params, signal) {
       const client = wiring.makeClient();
       if (client === null) {
-        return text("没有可用的 Jev key。先在 pi 里跑 `/jev-suite login`。");
+        return text("No usable Jev key. Run `/jev-suite login` first.");
       }
       const plan = typeof params.plan === "string" ? redact(params.plan) : "";
       const context = typeof params.context === "string" ? redact(params.context) : "";
-      if (plan.trim().length === 0) return text("plan 不能为空 —— 写清楚你准备做什么。");
+      if (plan.trim().length === 0) return text("plan must not be empty — describe what you are about to do.");
 
       const result = await client.ask({
         state: { value: { plan, user_request: context } },
         questions: buildAdvisorQuestions(),
         ...(signal === undefined ? {} : { signal }),
       });
-      if (!result.ok) return text(`Jev 没能回答（${result.reason}）：${result.detail}`);
+      if (!result.ok) return text(`Jev could not answer (${result.reason}): ${result.detail}`);
       return text(summarizeAdvice(result.answers), { answers: result.answers, model: result.model });
     },
   });

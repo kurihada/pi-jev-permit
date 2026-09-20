@@ -64,11 +64,11 @@ test("buildEvaluateQuestions：超过上限的部分被丢掉", () => {
 test("formatEvaluateResult：成功给数字，失败明确说「不是没问题」", () => {
   const good = formatEvaluateResult(okAnswers({ safe: 0.93 }));
   assert.match(good, /safe = 0\.930/);
-  assert.match(good, /不构成任何授权/);
+  assert.match(good, /not authorization/);
 
   const bad = formatEvaluateResult({ ok: false, reason: "network", detail: "连不上", latencyMs: 3 });
   assert.match(bad, /连不上/);
-  assert.match(bad, /不是「没问题」/);
+  assert.match(bad, /no objection/);
 });
 
 test("buildToolState：state 原样透传但过脱敏，没 state 就用 context", () => {
@@ -94,18 +94,18 @@ test("ask_advisor 的问题集：三个都是「有麻烦」方向，p 高 = 麻
 
 test("summarizeAdvice：没信号说可以继续，有信号点出是哪条", () => {
   const calm = summarizeAdvice({ blind_spot: 0.2, misread_request: 0.3, should_stop_and_ask: 0.4 });
-  assert.match(calm, /没有明显信号/);
-  assert.match(calm, /不构成授权/);
+  assert.match(calm, /No clear signal/);
+  assert.match(calm, /not authorization/);
 
   const loud = summarizeAdvice({ blind_spot: 0.81, misread_request: 0.2, should_stop_and_ask: 0.65 });
-  assert.match(loud, /有信号/);
-  assert.match(loud, /方案有明显缺陷/);
-  assert.match(loud, /应该先停下来问一句/);
+  assert.match(loud, /Signal raised/);
+  assert.match(loud, /the plan has a real defect/);
+  assert.match(loud, /better to stop and ask first/);
 
-  // 边界：正好等于阈值算报警
-  assert.match(summarizeAdvice({ blind_spot: ADVISOR_ALERT_THRESHOLD }), /有信号/);
-  // 缺字段跳过，不崩
-  assert.match(summarizeAdvice({}), /没有明显信号/);
+  // boundary: exactly at the threshold counts as an alert
+  assert.match(summarizeAdvice({ blind_spot: ADVISOR_ALERT_THRESHOLD }), /Signal raised/);
+  // missing fields are skipped, no crash
+  assert.match(summarizeAdvice({}), /No clear signal/);
 });
 
 // ---------------------------------------------------------------- 工具接线
@@ -145,7 +145,7 @@ test("jev_evaluate.execute：没有 key / 没有问题时给可读提示，不�
 
   registerTools(pi, { makeClient: () => f.client });
   const withClient = specs.filter((spec) => spec.name === "jev_evaluate").at(-1)!;
-  assert.match((await withClient.execute("c", { questions: [] })).content[0]!.text, /至少要问一个/);
+  assert.match((await withClient.execute("c", { questions: [] })).content[0]!.text, /At least one question/);
   assert.equal(f.calls.length, 0);
 });
 
@@ -159,10 +159,10 @@ test("ask_advisor.execute：把 plan 与 user_request 放进状态", async () =>
   const state = f.calls[0]!.state.value as Record<string, unknown>;
   assert.equal(state["plan"], "重写整个模块");
   assert.equal(state["user_request"], "用户想改个错字");
-  assert.match(result.content[0]!.text, /方案有明显缺陷/);
+  assert.match(result.content[0]!.text, /the plan has a real defect/);
 
   const empty = await spec.execute("c", { plan: "  " });
-  assert.match(empty.content[0]!.text, /plan 不能为空/);
+  assert.match(empty.content[0]!.text, /plan must not be empty/);
 });
 
 // ---------------------------------------------------------------- 入口 helper

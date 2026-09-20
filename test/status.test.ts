@@ -1,12 +1,12 @@
 /**
- * 状态显示：常驻在**编辑器上方**的 widget（默认位置）。
+ * Status display: the widget that sits permanently just above the input box.
  *
  * ```
- * jev-suite 放行 bash · ls -la /tmp          ← 首行：结论 + 工具 + 被判定对象（脱敏截断）
- *   快路径 · 0ms                               ← 次行：判定经过（落点/模型 · 读数 · 耗时）
- * jev-suite 拦下 bash · npm publish
+ * jev-suite allow bash · ls -la /tmp        ← line 1: verdict + tool + the call being judged
+ *   fast path · 0ms                         ← line 2: how it was decided (route/model · reading · time)
+ * jev-suite deny bash · npm publish
  *   typesafe/jev-1.13 · allow 0.04 · 792ms
- *   没有明确认为该放行（p=0.04 < 0.6）        ← 只有拦下时多这一行
+ *   not clearly allowed (p=0.04 < 0.6)      ← line 3, only when blocked
  * ```
  */
 import assert from "node:assert/strict";
@@ -31,10 +31,10 @@ const REJECTED: readonly ConditionOutcome[] = [
   { id: "allow", kind: "required", p: 0.04, threshold: 0.6, verdict: "rejected" },
 ];
 
-test("首行：结论 + 工具 + 被判定对象（放行与拦下都有）", () => {
+test("line 1: verdict + tool + the call being judged (both allow and deny)", () => {
   assert.equal(
     formatStatusLine(breaker(), { tool: "bash", kind: "allow", layer: "readonly", summary: "ls -la /tmp" }),
-    "jev-suite 放行 bash · ls -la /tmp",
+    "jev-suite allow bash · ls -la /tmp",
   );
   assert.equal(
     formatStatusLine(breaker(), {
@@ -43,42 +43,39 @@ test("首行：结论 + 工具 + 被判定对象（放行与拦下都有）", ()
       layer: "harddeny",
       summary: "/Users/xd/.pi/agent/settings.json",
     }),
-    "jev-suite 拦下 write · /Users/xd/.pi/agent/settings.json",
+    "jev-suite deny write · /Users/xd/.pi/agent/settings.json",
   );
-  // 没有摘要时不硬塞一个分隔符
-  assert.equal(
-    formatStatusLine(breaker(), { tool: "bash", kind: "allow", layer: "config" }),
-    "jev-suite 放行 bash",
-  );
+  // no summary -> no dangling separator
+  assert.equal(formatStatusLine(breaker(), { tool: "bash", kind: "allow", layer: "config" }), "jev-suite allow bash");
 });
 
-test("summariseCall：脱敏 + 压平 + 截断（首行那份截到 80）", () => {
-  assert.equal(summariseCall("bash", { command: "ls -la\n/tmp" }, 80), "ls -la /tmp", "换行压平");
+test("summariseCall: redacted, flattened, truncated (the widget copy caps at 80)", () => {
+  assert.equal(summariseCall("bash", { command: "ls -la\n/tmp" }, 80), "ls -la /tmp", "newlines flattened");
   const long = summariseCall("bash", { command: "x".repeat(200) }, 80);
-  assert.equal(long.length, 81, "80 字符 + 省略号");
+  assert.equal(long.length, 81, "80 chars + ellipsis");
   assert.ok(long.endsWith("…"));
   assert.ok(
     summariseCall("bash", { command: "curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwx' x.dev" }, 80).includes(
       "<redacted>",
     ),
-    "命令里的凭据不能上屏",
+    "a credential in the command must never reach the screen",
   );
   assert.equal(summariseCall("write", { path: "/tmp/a.ts" }, 80), "/tmp/a.ts");
   assert.equal(summariseCall("edit", {}, 80), "");
 });
 
-test("次行：落点 · 读数 · 耗时（三种情形形状一致）", () => {
-  // 快路径：本地判定，没有模型也没有读数
+test("line 2: route/model · reading · latency, same shape in all three cases", () => {
+  // fast path: decided locally, so no model and no reading
   assert.deepEqual(
     statusLines(breaker(), { tool: "bash", kind: "allow", layer: "readonly", summary: "ls", latencyMs: 0 }),
-    ["jev-suite 放行 bash · ls", "  快路径 · 0ms"],
+    ["jev-suite allow bash · ls", "  fast path · 0ms"],
   );
-  // 白名单：配置层没有耗时
+  // allowlist: the config layer has no latency
   assert.deepEqual(statusLines(breaker(), { tool: "write", kind: "allow", layer: "config", summary: "src/a.ts" }), [
-    "jev-suite 放行 write · src/a.ts",
-    "  白名单",
+    "jev-suite allow write · src/a.ts",
+    "  allowlist",
   ]);
-  // Jev：模型名顶掉落点
+  // Jev: the model name replaces the route label
   assert.deepEqual(
     statusLines(breaker(), {
       tool: "bash",
@@ -88,14 +85,14 @@ test("次行：落点 · 读数 · 耗时（三种情形形状一致）", () => 
       model: "typesafe/jev-1.13",
       latencyMs: 830,
       conditions: ALLOWED,
-      reason: "判断为可放行（p=0.94 ≥ 0.6）",
+      reason: "allowed (p=0.94 >= 0.6)",
     }),
-    ["jev-suite 放行 bash · npm install", "  typesafe/jev-1.13 · allow 0.94 · 830ms"],
-    "放行时理由不占位（它只是把读数换个说法）",
+    ["jev-suite allow bash · npm install", "  typesafe/jev-1.13 · allow 0.94 · 830ms"],
+    "an allow never spends a line on the reason (it only restates the reading)",
   );
 });
 
-test("第三行：只有拦下时给理由", () => {
+test("line 3: the reason, only when blocked", () => {
   assert.deepEqual(
     statusLines(breaker(), {
       tool: "bash",
@@ -105,41 +102,41 @@ test("第三行：只有拦下时给理由", () => {
       model: "typesafe/jev-1.13",
       latencyMs: 792,
       conditions: REJECTED,
-      reason: "没有明确认为该放行（p=0.04 < 0.6）",
+      reason: "not clearly allowed (p=0.04 < 0.6)",
     }),
     [
-      "jev-suite 拦下 bash · npm publish",
+      "jev-suite deny bash · npm publish",
       "  typesafe/jev-1.13 · allow 0.04 · 792ms",
-      "  没有明确认为该放行（p=0.04 < 0.6）",
+      "  not clearly allowed (p=0.04 < 0.6)",
     ],
   );
 
-  // 硬拦没有模型与读数，但理由必须在
+  // hard deny has no model and no reading, but the reason must be there
   assert.deepEqual(
     statusLines(breaker(), {
       tool: "bash",
       kind: "block",
       layer: "harddeny",
       summary: "rm -rf /",
-      reason: "递归删除根目录：/",
+      reason: "recursive delete of a root directory: /",
     }),
-    ["jev-suite 拦下 bash · rm -rf /", "  硬拦", "  递归删除根目录：/"],
+    ["jev-suite deny bash · rm -rf /", "  hard deny", "  recursive delete of a root directory: /"],
   );
 
-  // 命中 deny 规则的拦住 config 层
+  // a deny-rule block lands on the config layer
   assert.deepEqual(
     statusLines(breaker(), {
       tool: "bash",
       kind: "block",
       layer: "config",
       summary: "sudo ls",
-      reason: "命中 deny：sudo *",
+      reason: "matched deny: sudo *",
     }),
-    ["jev-suite 拦下 bash · sudo ls", "  拦截规则", "  命中 deny：sudo *"],
+    ["jev-suite deny bash · sudo ls", "  deny rule", "  matched deny: sudo *"],
   );
 });
 
-test("formatReadings：非有限值写 n/a", () => {
+test("formatReadings: non-finite probabilities read as n/a", () => {
   assert.equal(formatReadings(ALLOWED), "allow 0.94");
   assert.equal(
     formatReadings([{ id: "allow", kind: "required", p: Number.NaN, threshold: 0.6, verdict: "rejected" }]),
@@ -147,7 +144,7 @@ test("formatReadings：非有限值写 n/a", () => {
   );
 });
 
-test("理由过长要截断，别把 widget 撑爆", () => {
+test("an over-long reason is truncated instead of blowing up the widget", () => {
   const lines = statusLines(breaker(), {
     tool: "bash",
     kind: "block",
@@ -156,24 +153,24 @@ test("理由过长要截断，别把 widget 撑爆", () => {
     reason: "y".repeat(400),
   });
   assert.equal(lines.length, 3);
-  assert.equal(lines.at(-1)!.length, 142, "两空格 + 最多 140 字符");
+  assert.equal(lines.at(-1)!.length, 142, "two spaces + at most 140 chars");
 });
 
-test("降级与暂停优先显示，且只给一行", () => {
+test("degraded and paused win over a single verdict, and take a single line", () => {
   const degraded = breaker();
-  degraded.recordFailure("连不上");
-  degraded.recordFailure("连不上");
-  degraded.recordFailure("连不上");
+  degraded.recordFailure("unreachable");
+  degraded.recordFailure("unreachable");
+  degraded.recordFailure("unreachable");
   const lines = statusLines(degraded, {
     tool: "bash",
     kind: "block",
     layer: "jev",
     summary: "npm install",
     model: "typesafe/jev-1.13",
-    reason: "随便",
+    reason: "whatever",
     conditions: ALLOWED,
   });
-  assert.equal(lines.length, 1, "降级状态本身就说完了一切");
+  assert.equal(lines.length, 1, "the degraded state is the whole story");
   assert.match(lines[0]!, /DEGRADED/);
 
   const paused = breaker();
@@ -181,6 +178,6 @@ test("降级与暂停优先显示，且只给一行", () => {
   assert.deepEqual(statusLines(paused), ["jev-suite PAUSED 30m"]);
 });
 
-test("还没判定过时只说 ok", () => {
+test("nothing judged yet: just ok", () => {
   assert.deepEqual(statusLines(breaker()), ["jev-suite ok"]);
 });

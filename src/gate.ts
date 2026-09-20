@@ -179,12 +179,19 @@ export function combine(answers: Record<string, number>, thresholds: Thresholds)
   ];
 
   if (satisfied) {
-    return { allow: true, decidingRule: rule.id, reason: `判断为可放行（p=${p.toFixed(2)} ≥ ${threshold}）`, conditions };
+    return {
+      allow: true,
+      decidingRule: rule.id,
+      reason: `allowed (p=${p.toFixed(2)} >= ${threshold})`,
+      conditions,
+    };
   }
   return {
     allow: false,
     decidingRule: rule.id,
-    reason: Number.isFinite(p) ? `没有明确认为该放行（p=${p.toFixed(2)} < ${threshold}）` : "模型没有回答",
+    reason: Number.isFinite(p)
+      ? `not clearly allowed (p=${p.toFixed(2)} < ${threshold})`
+      : "the model did not answer",
     conditions,
   };
 }
@@ -381,19 +388,19 @@ export async function evaluateToolCall(
   } else {
     const target = resolveWriteTarget(input, deps.cwd);
     if (target === null) {
-      return { kind: "block", layer: "config", reason: "无法确定写入目标" };
+      return { kind: "block", layer: "config", reason: "cannot determine the write target" };
     }
     const exemptPaths = deps.exemptPaths ?? [];
     if (isExemptPath(target.absolutePath, exemptPaths)) {
-      return { kind: "allow", layer: "config", reason: "本包自己的配置或日志" };
+      return { kind: "allow", layer: "config", reason: "this package's own config or log" };
     }
     const protectedReason = protectedPathReason(target.absolutePath, deps.protectedPaths, exemptPaths);
     if (!target.outsideCwd && protectedReason === null) {
-      return { kind: "allow", layer: "config", reason: "项目内且非保护路径" };
+      return { kind: "allow", layer: "config", reason: "inside the project and not a protected path" };
     }
     operation = target.absolutePath;
     reasons = [
-      ...(target.outsideCwd ? ["写入工作目录之外"] : []),
+      ...(target.outsideCwd ? ["write outside the working directory"] : []),
       ...(protectedReason === null ? [] : [protectedReason]),
     ];
     extra = { outsideWorkingDirectory: target.outsideCwd, editCount: editCountOf(input) };
@@ -401,13 +408,13 @@ export async function evaluateToolCall(
 
   const breaker = deps.breaker.state();
   if (breaker === "paused") {
-    return { kind: "allow", layer: "paused", reason: "门禁已暂停，放行" };
+    return { kind: "allow", layer: "paused", reason: "the gate is paused" };
   }
   if (deps.client === null) {
     return {
       kind: "block",
       layer: "unavailable",
-      reason: "没有可用的 key，无法判定这次调用（只读与白名单命令不受影响）",
+      reason: "no usable key, so this call cannot be judged (fast-path and allowlisted commands are unaffected)",
       policyReasons: reasons,
     };
   }
@@ -415,7 +422,7 @@ export async function evaluateToolCall(
     return {
       kind: "block",
       layer: "degraded",
-      reason: `Jev 连续失败，已降级：${deps.breaker.lastReason || "原因未知"}`,
+      reason: `Jev keeps failing, now degraded: ${deps.breaker.lastReason || "unknown reason"}`,
       policyReasons: reasons,
     };
   }
@@ -440,7 +447,12 @@ export async function evaluateToolCall(
 
   if (!result.ok) {
     deps.breaker.recordFailure(result.detail);
-    return { kind: "block", layer: "unavailable", reason: `判定失败：${result.detail}`, policyReasons: reasons };
+    return {
+      kind: "block",
+      layer: "unavailable",
+      reason: `judgement failed: ${result.detail}`,
+      policyReasons: reasons,
+    };
   }
 
   deps.breaker.recordSuccess();
@@ -519,13 +531,13 @@ export interface StatusSubject {
  * 走了 Jev 就带上模型名（「谁判的」和「判了什么」一样重要）。
  * 降级 / 暂停优先：这两种状态比单次结果更重要。
  */
-/** 层的短标签；`jev` 不在表里 —— 它要显示的是**模型名** */
+/** Layer labels for the status line; `jev` is absent on purpose — it shows the **model name** instead. */
 const LAYER_LABELS: Readonly<Record<string, string>> = {
-  readonly: "快路径",
-  harddeny: "硬拦",
-  unavailable: "Jev 不可用",
-  degraded: "已降级",
-  paused: "已暂停",
+  readonly: "fast path",
+  harddeny: "hard deny",
+  unavailable: "Jev unavailable",
+  degraded: "degraded",
+  paused: "paused",
 };
 
 /**
@@ -535,7 +547,7 @@ const LAYER_LABELS: Readonly<Record<string, string>> = {
  * - 其余层用中文短标签，不再把英文层名丢给用户看
  */
 function whereOf(subject: StatusSubject): string {
-  if (subject.layer === "config") return subject.kind === "block" ? "拦截规则" : "白名单";
+  if (subject.layer === "config") return subject.kind === "block" ? "deny rule" : "allowlist";
   return LAYER_LABELS[subject.layer] ?? subject.model ?? subject.layer;
 }
 
@@ -551,10 +563,10 @@ export function formatStatusLine(breaker: Breaker, subject?: StatusSubject): str
   if (state === "paused") {
     return `jev-suite PAUSED ${Math.ceil(breaker.pauseRemainingMs() / 60_000)}m`;
   }
-  if (state === "degraded") return "jev-suite DEGRADED（Jev 不可用，只放行只读与白名单）";
+  if (state === "degraded") return "jev-suite DEGRADED (Jev unavailable — only fast-path and allowlisted calls pass)";
   if (subject === undefined) return "jev-suite ok";
 
-  const outcome = subject.kind === "allow" ? "放行" : "拦下";
+  const outcome = subject.kind === "allow" ? "allow" : "deny";
   // 首行 = 结论 + 工具 + 被判定对象（命令或路径，已脱敏与截断）
   const what =
     subject.summary === undefined || subject.summary.length === 0 ? "" : ` · ${subject.summary}`;
@@ -701,7 +713,7 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
     if (verdict.kind === "block") {
       return {
         block: true,
-        reason: `pi-jev-suite 拦下了这次调用：${verdict.reason}。不要原样重试，换做法或先问用户。`,
+        reason: `pi-jev-suite blocked this call: ${verdict.reason}. Do not retry it unchanged — change the approach or ask the user.`,
       };
     }
     return undefined;

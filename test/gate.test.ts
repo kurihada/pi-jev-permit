@@ -72,12 +72,12 @@ test("combine：阈值边界 —— 正好等于算放行，差一点就不放",
 test("combine：fail-closed —— 说不清就是不放", () => {
   const muddled = combine({ allow: 0.5 }, T);
   assert.equal(muddled.allow, false);
-  assert.match(muddled.reason, /没有明确认为该放行/);
+  assert.match(muddled.reason, /not clearly allowed/);
 
   // 模型没答这个 key
   const missing = combine({}, T);
   assert.equal(missing.allow, false);
-  assert.match(missing.reason, /没有回答/);
+  assert.match(missing.reason, /did not answer/);
 
   // 非有限值同样不放
   assert.equal(combine({ allow: Number.NaN }, T).allow, false);
@@ -324,7 +324,7 @@ test("端到端：判定失败会记进断路器，并降级后续调用", async
 
   const second = await evaluateToolCall("bash", { command: "npm install" }, d);
   assert.equal(second.layer, "degraded", "已经是降级状态，不再打网络");
-  assert.match(second.reason, /已降级/);
+  assert.match(second.reason, /now degraded/);
 
   // 降级不影响第 ①② 层
   assert.equal((await evaluateToolCall("bash", { command: "git status" }, d)).kind, "allow");
