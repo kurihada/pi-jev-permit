@@ -362,7 +362,7 @@ const ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
  * 不做这一步，`sudo rm -rf /` / `env FOO=1 rm -rf /` 会绕过硬拦（token[0] 是 sudo / env，不是 rm）。
  * 上游拿整串正则反而盖住了这种情况 —— 按 argv 判断就不能退化。
  */
-export function effectiveCommandIndex(tokens: readonly Token[]): number {
+export function effectiveCommandIndex(tokens: readonly Token[], wrappers: readonly string[] = []): number {
   let i = 0;
   for (let guard = 0; guard < 8 && i < tokens.length; guard++) {
     const token = tokens[i]!;
@@ -370,7 +370,10 @@ export function effectiveCommandIndex(tokens: readonly Token[]): number {
       i++;
       continue;
     }
-    if (token.quoted || !COMMAND_PREFIXES.has(token.text.toLowerCase())) break;
+    // 透明包装器与命令前缀一样跳过：否则 `rtk rm -rf /` 会让硬拦认不出 rm
+    if (token.quoted || !(COMMAND_PREFIXES.has(token.text.toLowerCase()) || wrappers.includes(token.text))) {
+      break;
+    }
     i++;
     while (i < tokens.length) {
       const arg = tokens[i]!;
@@ -388,10 +391,10 @@ export function effectiveCommandIndex(tokens: readonly Token[]): number {
   return Math.min(i, tokens.length);
 }
 
-export function hardDenySegment(raw: string): string | null {
+export function hardDenySegment(raw: string, wrappers: readonly string[] = []): string | null {
   const tokens = tokenize(raw);
   if (tokens.length === 0) return null;
-  const idx = effectiveCommandIndex(tokens);
+  const idx = effectiveCommandIndex(tokens, wrappers);
   const cmd = (tokens[idx]?.text ?? "").toLowerCase();
   const rest = tokens.slice(idx + 1);
 
@@ -426,9 +429,9 @@ export function hardDenySegment(raw: string): string | null {
   return null;
 }
 
-export function hardDenyReason(segments: readonly Segment[]): string | null {
+export function hardDenyReason(segments: readonly Segment[], wrappers: readonly string[] = []): string | null {
   for (const seg of segments) {
-    const reason = hardDenySegment(seg.raw);
+    const reason = hardDenySegment(seg.raw, wrappers);
     if (reason) return reason;
   }
   return null;
@@ -438,15 +441,22 @@ export function hardDenyReason(segments: readonly Segment[]): string | null {
  * 整条命令级别的硬拦。fork bomb 会被切段切碎（`:` `|` `&` `;` 都是分隔符），
  * 所以这一条必须在切段前看原文。
  */
-export function hardDenyCommand(command: string, segments: readonly Segment[]): string | null {
+export function hardDenyCommand(
+  command: string,
+  segments: readonly Segment[],
+  wrappers: readonly string[] = [],
+): string | null {
   if (FORK_BOMB.test(command)) return "fork bomb";
-  return hardDenyReason(segments);
+  return hardDenyReason(segments, wrappers);
 }
 
 // ---------------------------------------------------------------- 只读判定
 
 const READ_ONLY_COMMANDS = new Set([
   "pwd", "cd", "ls", "tree", "cat", "bat", "head", "tail", "less", "more",
+  // `read` 是 shell 内建（把 stdin 读进变量，无副作用），也是 pi-rtk-optimizer 给 `tail` 用的名字：
+  // rtk 不只是加前缀，它会把动词翻译掉（tail → `rtk read`）—— 只剥包装器会剩下一个从没写过的命令名。
+  "read",
   "wc", "file", "stat", "realpath", "readlink", "basename", "dirname", "du", "df",
   "find", "grep", "rg", "ag", "jq", "diff", "cmp", "sort", "uniq", "cut", "column", "nl",
   "xxd", "od", "strings", "echo", "printf", "which", "whoami", "hostname", "uname",
@@ -457,7 +467,7 @@ const READ_ONLY_COMMANDS = new Set([
 const FIND_WRITE_FLAGS = ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"];
 
 /** 这些命令会把文件内容放进上下文 → 必须确认参数不是凭据文件 */
-const CREDENTIAL_SENSITIVE = new Set(["cat", "bat", "head", "tail", "less", "more", "xxd", "od", "strings", "grep", "rg", "ag", "jq"]);
+const CREDENTIAL_SENSITIVE = new Set(["cat", "bat", "head", "tail", "less", "more", "read", "xxd", "od", "strings", "grep", "rg", "ag", "jq"]);
 
 const VERSION_ONLY_FLAGS = new Set(["--version", "-v", "--help", "-h", "version"]);
 const VERSION_ONLY_COMMANDS = new Set([
@@ -561,7 +571,7 @@ export function decideBash(command: string, policy: BashPolicy): BashResult {
   }
 
   // 0. 硬拦（每段的原始文本）
-  const denied = hardDenyCommand(command, segments);
+  const denied = hardDenyCommand(command, segments, policy.transparentWrappers);
   if (denied) return { decision: { kind: "deny", layer: "harddeny", reason: denied }, segments };
 
   // 归一化
