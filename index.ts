@@ -6,7 +6,7 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type SuiteConfig, loadConfig, resolveProvider } from "./src/config.ts";
+import { type ResolvedProvider, type SuiteConfig, loadConfig, resolveProvider } from "./src/config.ts";
 import {
   type JevClient,
   type JevJson,
@@ -233,18 +233,30 @@ export default function piJevSuite(pi: ExtensionApiLike & ToolApiLike & CommandA
 
       switch (sub) {
         case "login": {
-          const provider = resolveProvider(config.provider);
+          // 两个消费方可以走不同协议（门禁走网关、工具走官方），所以按协议找配置：
+          // 不指定就登默认那条，指定了就找走该协议的消费方。
+          const candidates: { label: string; provider: ResolvedProvider }[] = [
+            { label: "默认", provider: resolveProvider(config.provider) },
+            { label: "门禁", provider: resolveProvider(config.gate.provider ?? config.provider) },
+            { label: "工具", provider: resolveProvider(config.tools.provider ?? config.provider) },
+          ];
           const requested = rest[0];
-          if (requested !== undefined && requested !== provider.protocol) {
+          const chosen =
+            requested === undefined
+              ? candidates[0]
+              : candidates.find((candidate) => candidate.provider.protocol === requested);
+          if (chosen === undefined) {
+            const known = [...new Set(candidates.map((candidate) => candidate.provider.protocol))];
             notify(
-              `当前配置走的是 ${provider.protocol}；要登录 ${requested} 请先改配置里的 provider.preset`,
+              `配置里没有走 ${requested} 的消费方（当前有：${known.join(", ")}）；先改配置里的 provider.preset`,
               "warning",
             );
             return;
           }
+          const provider = chosen.provider;
           const key = await ctx.ui?.input?.(
             `${provider.protocol} 的 API key（${provider.baseUrl}）`,
-            "粘贴 key 后回车",
+            `供${chosen.label}使用，粘贴 key 后回车`,
           );
           if (typeof key !== "string" || key.trim().length === 0) {
             notify("没有输入 key，未做改动", "info");
@@ -263,7 +275,7 @@ export default function piJevSuite(pi: ExtensionApiLike & ToolApiLike & CommandA
           }
           writeStoredApiKey(agentDir, provider.protocol, key.trim());
           notify(
-            `已保存 ${provider.protocol} 的 key：${credentialPath(agentDir, provider.protocol)}（0600）`,
+            `已保存 ${provider.protocol} 的 key（供${chosen.label}使用）：${credentialPath(agentDir, provider.protocol)}（0600）`,
             "info",
           );
           return;
