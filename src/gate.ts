@@ -1006,16 +1006,20 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
     }
 
     if (verdict.kind === "block") {
-      // The third next move is worth naming: the reader can authorise this one call instead of
-      // changing the approach. A credential refusal is exempt - `allow` refuses those, so
-      // advertising it there would only waste a turn.
-      const escape =
-        verdict.reasonClass === CREDENTIAL_BLOCK_CLASS
-          ? "Only /jev-permit pause can let a call like this through."
-          : "They can authorise this one retry with /jev-permit allow, which lasts 60 seconds and is spent by the retry itself.";
+      // Only a model refusal can be granted, so only that layer advertises /jev-permit allow:
+      // layer 0 and the deny rules return before the grant is ever consulted, and the
+      // unavailable/degraded states are checked before it too. Advertising `allow` for those was
+      // a real defect - it sent the reader after a command that could not help them.
+      let escape = "";
+      if (verdict.layer === "jev") {
+        escape =
+          verdict.reasonClass === CREDENTIAL_BLOCK_CLASS
+            ? " Only /jev-permit pause can let a call like this through."
+            : " They can authorise this one retry with /jev-permit allow, which lasts 60 seconds and is spent by the retry itself.";
+      }
       return {
         block: true,
-        reason: `pi-jev-permit blocked this call: ${verdict.reason}. Do not retry it unchanged — change the approach or ask the user. ${escape}`,
+        reason: `pi-jev-permit blocked this call: ${verdict.reason}. Do not retry it unchanged — change the approach or ask the user.${escape}`,
       };
     }
     return undefined;
