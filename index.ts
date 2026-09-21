@@ -21,7 +21,15 @@ import {
   verifyKey,
   writeStoredApiKey,
 } from "./src/jev.ts";
-import { AllowGrants, Breaker, type ExtensionApiLike, type GateContextLike, registerGate } from "./src/gate.ts";
+import {
+  AllowGrants,
+  Breaker,
+  type ExtensionApiLike,
+  type GateContextLike,
+  refusalOption,
+  refusalOptionId,
+  registerGate,
+} from "./src/gate.ts";
 
 export interface CommandApiLike {
   registerCommand(
@@ -302,32 +310,44 @@ export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void
         }
 
         case "allow": {
-          const wanted = Number.parseInt(rest[0] ?? "", 10);
-          if (!Number.isFinite(wanted)) {
-            const refused = grants.list(10);
-            if (refused.length === 0) {
-              notify("Nothing has been refused by the model in this session", "info");
-              return;
-            }
-            const rows = refused.map((item) => {
-              const mark =
-                item.reasonClass === "because_credential_risk" ? "  (credentials - pause only)" : "";
-              return `#${item.id}  ${item.tool}  ${item.summary.slice(0, 80)}${mark}`;
-            });
+          const refused = grants.list(10);
+          const authorise = (id: number): void => {
+            const issued = grants.grant(id);
             notify(
-              `Refused by the model in this session, newest first:\n${rows.join("\n")}\n\n` +
-                "/jev-permit allow <id> authorises one retry: 60 seconds, one use, and only that exact call.",
-              "info",
+              issued.ok
+                ? `Authorised one retry: ${issued.call.tool} · ${issued.call.summary.slice(0, 80)} - valid 60 seconds, spent by the retry itself`
+                : `Cannot authorise #${id}: ${issued.reason}`,
+              issued.ok ? "info" : "warning",
             );
+          };
+
+          // An id skips the picker: `/jev-permit allow 3` is the form a script or a quick hand types.
+          const wanted = Number.parseInt(rest[0] ?? "", 10);
+          if (Number.isFinite(wanted)) {
+            authorise(wanted);
             return;
           }
-          const issued = grants.grant(wanted);
-          if (!issued.ok) {
-            notify(`Cannot authorise #${wanted}: ${issued.reason}`, "warning");
+          if (refused.length === 0) {
+            notify("Nothing has been refused by the model in this session", "info");
             return;
           }
+
+          // pi's picker when the TUI can do it - arrow keys beat retyping a command. It carries
+          // strings, so the line contains the id it stands for (see refusalOption).
+          const picked = await ctx.ui?.select?.(
+            "Refused by the model - authorise one retry?",
+            refused.map((item) => refusalOption(item)),
+          );
+          const pickedId = picked === undefined ? null : refusalOptionId(picked);
+          if (pickedId !== null) {
+            authorise(pickedId);
+            return;
+          }
+
+          // No picker (or it was dismissed): the same list as text, id on every line.
           notify(
-            `Authorised one retry: ${issued.call.tool} · ${issued.call.summary.slice(0, 80)} - valid 60 seconds, spent by the retry itself`,
+            `Refused by the model in this session, newest first:\n${refused.map((item) => refusalOption(item)).join("\n")}\n\n` +
+              "/jev-permit allow <id> authorises one retry: 60 seconds, one use, and only that exact call.",
             "info",
           );
           return;

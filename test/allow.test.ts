@@ -18,6 +18,8 @@ import {
   CREDENTIAL_BLOCK_CLASS,
   type GateDeps,
   evaluateToolCall,
+  refusalOption,
+  refusalOptionId,
 } from "../src/gate.ts";
 import { type AskResult, EMPTY_USAGE, type JevClient } from "../src/jev.ts";
 import type { BashPolicy } from "../src/policy.ts";
@@ -164,4 +166,30 @@ test("a grant cannot wave a call through a gate that is not judging", async () =
   const noKey = await evaluateToolCall("bash", { command: "git clean -fd" }, { ...d, client: null });
   assert.equal(noKey.kind, "block");
   assert.equal(noKey.layer, "unavailable", "no key is not something a grant may bypass");
+});
+
+// The picker (`ctx.ui.select`) hands back the chosen string, not an index, so the line has to carry
+// the id it stands for. These two tests are that round trip.
+test("a picker line carries the id it stands for", () => {
+  const line = refusalOption({ id: 7, tool: "bash", summary: "git clean -fd", reason: "x" });
+  assert.equal(line, "#7  bash  git clean -fd");
+  assert.equal(refusalOptionId(line), 7);
+  assert.equal(refusalOptionId("bash  git clean -fd"), null, "a line without an id is not a choice");
+  assert.equal(refusalOptionId(""), null);
+});
+
+test("a credential refusal says so, and a long command is shortened", () => {
+  const line = refusalOption({
+    id: 2,
+    tool: "bash",
+    summary: "cat /Users/xd/.ssh/id_rsa",
+    reason: "x",
+    reasonClass: CREDENTIAL_BLOCK_CLASS,
+  });
+  assert.match(line, /pause only/, "the reader has to see that allow is not an option here");
+  assert.equal(refusalOptionId(line), 2);
+
+  const long = refusalOption({ id: 3, tool: "bash", summary: "x".repeat(200), reason: "x" });
+  assert.ok(long.length < 120, "the picker is one line wide");
+  assert.equal(refusalOptionId(long), 3);
 });

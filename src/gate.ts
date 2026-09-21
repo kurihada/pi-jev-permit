@@ -325,6 +325,27 @@ export class AllowGrants {
   }
 }
 
+/**
+ * One line for the picker (and for the plain list).
+ *
+ * The id leads because `ctx.ui.select` carries strings only: the choice comes back as the line,
+ * so the line has to contain the id it stands for.
+ */
+export function refusalOption(block: BlockedCall, maxChars = 80): string {
+  const mark = block.reasonClass === CREDENTIAL_BLOCK_CLASS ? "  (credentials - pause only)" : "";
+  const summary =
+    block.summary.length > maxChars ? `${block.summary.slice(0, maxChars)}…` : block.summary;
+  return `#${block.id}  ${block.tool}  ${summary}${mark}`;
+}
+
+/** The id a `refusalOption` line stands for, or null when the text is not one. */
+export function refusalOptionId(text: string): number | null {
+  const match = /^#(\d+)\s/.exec(text);
+  if (match === null) return null;
+  const id = Number.parseInt(match[1] ?? "", 10);
+  return Number.isFinite(id) ? id : null;
+}
+
 export type ConditionVerdict = "satisfied" | "rejected" | "unclear";
 
 export interface ConditionOutcome {
@@ -735,6 +756,8 @@ export interface GateUiLike {
   setWidget?(key: string, content: string[] | undefined, options?: { placement?: string }): void;
   notify?(message: string, level?: string): void;
   input?(title: string, placeholder?: string): Promise<string | undefined>;
+  /** pi's picker. It carries strings only, so the chosen line is what comes back — see refusalOption. */
+  select?(title: string, options: readonly string[]): Promise<string | undefined>;
 }
 
 export interface GateContextLike {
