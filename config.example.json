@@ -1,6 +1,7 @@
 {
   "provider": {
     "preset": "gateway",
+    "baseUrl": "https://your-gateway.example.com",
     "timeoutMs": 4000,
     "maxRetries": 1
   },

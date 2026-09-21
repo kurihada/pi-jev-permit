@@ -29,18 +29,29 @@ test("resolveProvider: defaults to the official TypeSafe", () => {
 });
 
 test("resolveProvider: a preset expands into protocol + baseUrl + model", () => {
-  const p = resolveProvider({ preset: "gateway" });
+  const p = resolveProvider({ preset: "openrouter" });
   assert.equal(p.protocol, "decisions");
-  assert.equal(p.baseUrl, "https://gateway.invalid");
+  assert.equal(p.baseUrl, "https://openrouter.ai");
   assert.equal(p.model, "typesafe/jev-1.13");
   assert.equal(p.timeoutMs, 4000);
 });
 
+test("resolveProvider: the gateway preset carries no endpoint, so the config supplies one", () => {
+  const p = resolveProvider({ preset: "gateway", baseUrl: "https://gateway.test" });
+  assert.equal(p.protocol, "decisions");
+  assert.equal(p.baseUrl, "https://gateway.test");
+  assert.equal(p.model, "typesafe/jev-1.13");
+
+  // Nothing configured: empty rather than falling back to TypeSafe, which would send a private
+  // gateway's key to the wrong host - a failure that costs an afternoon to diagnose.
+  assert.equal(resolveProvider({ preset: "gateway" }).baseUrl, "");
+});
+
 test("resolveProvider: explicit fields override the preset", () => {
-  const p = resolveProvider({ preset: "gateway", model: "typesafe/jev-latest", timeoutMs: 9000 });
+  const p = resolveProvider({ preset: "openrouter", model: "typesafe/jev-latest", timeoutMs: 9000 });
   assert.equal(p.model, "typesafe/jev-latest");
   assert.equal(p.timeoutMs, 9000);
-  assert.equal(p.baseUrl, "https://gateway.invalid");
+  assert.equal(p.baseUrl, "https://openrouter.ai");
 });
 
 // ---------------------------------------------------------------- merge
@@ -72,7 +83,7 @@ test("the global config applies, and the gate can override the access method", (
     join(agentDir, "pi-jev-permit.json"),
     JSON.stringify({
       provider: { preset: "typesafe", timeoutMs: 3000 },
-      gate: { provider: { preset: "gateway" }, records: "status", allow: ["ls *"] },
+      gate: { provider: { preset: "gateway", baseUrl: "https://g.test" }, records: "status", allow: ["ls *"] },
       // a leftover `tools` block from when jev_evaluate and ask_advisor existed
       tools: { provider: { preset: "typesafe" } },
     }),

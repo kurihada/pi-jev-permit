@@ -13,7 +13,7 @@ Two earlier consumers, `jev_evaluate` and `ask_advisor`, were removed. They were
 3. **Only if you bill a gateway or a router**, point the package at it *before* logging in, in `~/.pi/agent/pi-jev-permit.json`:
 
    ```json
-   { "provider": { "preset": "gateway" } }
+   { "provider": { "preset": "gateway", "baseUrl": "https://your-gateway.example.com" } }
    ```
 
    Official TypeSafe users need no config at all; the default preset is `typesafe`.
@@ -64,7 +64,7 @@ Global `~/.pi/agent/pi-jev-permit.json`, project `<cwd>/.pi/pi-jev-permit.json` 
 
 ```jsonc
 {
-  "provider": { "preset": "gateway", "timeoutMs": 4000, "maxRetries": 1 },
+  "provider": { "preset": "gateway", "baseUrl": "https://your-gateway.example.com", "timeoutMs": 4000, "maxRetries": 1 },
   "budget": { "requestsPerDay": 2000, "usdPerDay": 1.0 },
   "gate": {
     "records": "status",                 // status | full | off
@@ -78,7 +78,7 @@ Global `~/.pi/agent/pi-jev-permit.json`, project `<cwd>/.pi/pi-jev-permit.json` 
 }
 ```
 
-Presets: `typesafe` (official `/v1/systemone`), `gateway` and `openrouter` (the decisions contract at `/api/alpha/decisions`). The two protocols differ only in URL, key verification and model id — the request and response bodies are the same JSON, so one parser serves both. `gate.provider` may override the global provider field by field, which is how the gate can bill a different account than the global default.
+Presets: `typesafe` (official `/v1/systemone`), `gateway` and `openrouter` (the decisions contract at `/api/alpha/decisions`). `gateway` ships **no endpoint** — a private gateway has no public address to put in a published package, so `baseUrl` is required next to it; `openrouter` carries its own. The two protocols differ only in URL, key verification and model id — the request and response bodies are the same JSON, so one parser serves both. `gate.provider` may override the global provider field by field, which is how the gate can bill a different account than the global default.
 
 Invalid values are dropped with a warning rather than silently defaulted; a missing field keeps its default (absent is not the same as wrong).
 

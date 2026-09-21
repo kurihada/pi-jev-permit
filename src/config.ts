@@ -26,15 +26,17 @@ export function protocolPath(p: Protocol): string {
 
 /**
  * Presets encode pitfalls already hit:
- *   - gateway only accepts `typesafe/jev-1.13` (jev-latest → 403, typesafe/jev-latest → 400)
+ *   - a private gateway only accepts `typesafe/jev-1.13` (jev-latest → 403, typesafe/jev-latest → 400)
  *   - the two protocols return identically-shaped bodies, so one parser is shared; only the
  *     URL / key verification / model name differ
+ *   - `gateway` deliberately carries **no** endpoint: a private gateway has no public address to
+ *     put in a published package, so `provider.baseUrl` is required alongside it
  */
 export const PRESETS = {
   typesafe: { protocol: "systemone", baseUrl: "https://api.typesafe.ai", model: "jev-1.13.0" },
-  gateway: { protocol: "decisions", baseUrl: "https://gateway.invalid", model: "typesafe/jev-1.13" },
+  gateway: { protocol: "decisions", baseUrl: undefined, model: "typesafe/jev-1.13" },
   openrouter: { protocol: "decisions", baseUrl: "https://openrouter.ai", model: "typesafe/jev-1.13" },
-} as const satisfies Record<string, { protocol: Protocol; baseUrl: string; model: string }>;
+} as const satisfies Record<string, { protocol: Protocol; baseUrl?: string | undefined; model: string }>;
 
 export type PresetName = keyof typeof PRESETS;
 export const PRESET_NAMES = Object.keys(PRESETS) as PresetName[];
@@ -312,6 +314,12 @@ function coerceProvider(v: unknown, field: string, warnings: string[]): Provider
   if (v.maxRetries !== undefined) {
     out.maxRetries = coerceInt(v.maxRetries, `${field}.maxRetries`, warnings, 1, 0, LIMITS.maxRetries);
   }
+  const preset = out.preset === undefined ? undefined : PRESETS[out.preset];
+  if (preset !== undefined && preset.baseUrl === undefined && out.baseUrl === undefined) {
+    warnings.push(
+      `${field}: preset ${out.preset} carries no endpoint of its own (a private gateway has no public address to ship), so ${field}.baseUrl is required`,
+    );
+  }
   return out;
 }
 
@@ -321,7 +329,10 @@ export function resolveProvider(cfg: ProviderConfig | undefined, budgeted?: Part
   const preset = merged.preset ? PRESETS[merged.preset] : undefined;
   return {
     protocol: merged.protocol ?? preset?.protocol ?? "systemone",
-    baseUrl: merged.baseUrl ?? preset?.baseUrl ?? PRESETS.typesafe.baseUrl,
+    // No endpoint fallback beyond the preset: for a decisions endpoint with none configured, an
+    // empty baseUrl is the honest answer. Falling back to TypeSafe would send a gateway key to the
+    // wrong host, which is a failure that costs an afternoon.
+    baseUrl: merged.baseUrl ?? preset?.baseUrl ?? "",
     model: merged.model ?? preset?.model ?? PRESETS.typesafe.model,
     timeoutMs: merged.timeoutMs ?? DEFAULT_CONFIG.provider.timeoutMs!,
     maxRetries: merged.maxRetries ?? 1,
