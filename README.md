@@ -86,7 +86,7 @@ Invalid values are dropped with a warning rather than silently defaulted; a miss
 
 | command | what it does |
 | --- | --- |
-| `/jev-permit allow [id]` | lists the calls the model refused this session, newest first; with an id it authorises **one retry** of that exact call — bound to the tool and the redacted command, valid 60 seconds, spent by the retry. It cannot cover a hard deny (never listed) or a credential refusal (marked `pause only`) |
+| `/jev-permit allow [id]` | opens a picker over the calls the model refused this session (falls back to the same list as text when the TUI has no picker); with an id it authorises **one retry** of that exact call — bound to the tool and the redacted command, valid 60 seconds, spent by the retry. It cannot cover a hard deny (never listed) or a credential refusal (marked `pause only`) |
 | `/jev-permit login [systemone\|decisions]` | verifies a key against the endpoint the gate actually uses, then stores it `0600` in that protocol's own slot |
 | `/jev-permit pause [30m]` | allows everything until the deadline, then recovers by itself |
 | `/jev-permit resume` | ends a pause |

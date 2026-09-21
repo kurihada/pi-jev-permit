@@ -773,6 +773,17 @@ export interface ExtensionApiLike {
     handler: (event: ToolCallEventLike, ctx: GateContextLike) => Promise<{ block: true; reason: string } | undefined>,
   ): void;
   appendEntry?(customType: string, data: unknown): void;
+  /**
+   * Injects a message that participates in LLM context without being a user turn.
+   *
+   * `customType` is what keeps it out of the gate's intent window: only entries with
+   * `role: "user"` and an empty customType count there, so a notice sent this way can never be
+   * read as a fresh authorisation of the call it is talking about.
+   */
+  sendMessage?(
+    message: { customType: string; content: string; display?: boolean },
+    options?: { triggerTurn?: boolean; deliverAs?: string },
+  ): void;
 }
 
 export interface GateWiring {
@@ -806,6 +817,7 @@ export interface StatusSubject {
 /** Layer labels for the status line; `jev` is absent on purpose — it shows the **model name** instead. */
 const LAYER_LABELS: Readonly<Record<string, string>> = {
   readonly: "fast path",
+  grant: "allowed once",
   harddeny: "hard deny",
   unavailable: "Jev unavailable",
   degraded: "degraded",

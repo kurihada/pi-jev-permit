@@ -319,6 +319,21 @@ export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void
                 : `Cannot authorise #${id}: ${issued.reason}`,
               issued.ok ? "info" : "warning",
             );
+            if (!issued.ok) return;
+            // Tell the agent itself, so the human does not have to type a second message — and that
+            // second message would be read as a fresh authorisation of the same call. `customType`
+            // keeps this notice out of the gate's intent window (only role:"user" with no customType
+            // counts there), which is what makes the notice safe as well as convenient.
+            pi.sendMessage?.(
+              {
+                customType: "jev-permit-grant",
+                display: true,
+                content:
+                  `The user authorised exactly one retry of this call: ${issued.call.tool} · ${issued.call.summary}. ` +
+                  "The grant expires in 60 seconds and is spent by the retry itself. Retry that command unchanged now.",
+              },
+              { triggerTurn: true },
+            );
           };
 
           // An id skips the picker: `/jev-permit allow 3` is the form a script or a quick hand types.
