@@ -147,3 +147,55 @@ test("an allowed call is unaffected by the window", async () => {
   assert.equal(verdict.layer, "jev", "an allow is an allow: shadow only ever touches refusals");
   assert.doesNotMatch(verdict.reason, /would have blocked/);
 });
+
+// ---------------------------------------------------------------- the window and the breaker
+//
+// A window exists to keep the model being asked while its answers are watched, and a tripped breaker is
+// the one state that stops that. Left alone, three shadowed refusals — exactly the run of false refusals
+// the window was opened for — would trip it and the window would go blind.
+
+test("a run of refusals inside the window never trips the breaker", async () => {
+  const clock = { now: 0 };
+  const { breaker, deps } = setup(clock);
+  breaker.shadow(60_000);
+
+  for (let index = 0; index < 4; index += 1) {
+    const verdict = await evaluateToolCall("bash", { command: `mkdir -p /tmp/x${index}` }, deps());
+    assert.equal(verdict.layer, "shadow", "the model keeps being asked, which is the point");
+  }
+  assert.equal(breaker.tripped(), false);
+  assert.equal(breaker.refusals, 0, "nothing is counted while the answers are being watched");
+});
+
+test("opening a window clears a trip that was already active", async () => {
+  const clock = { now: 0 };
+  const { breaker, deps } = setup(clock);
+
+  for (let index = 0; index < 3; index += 1) {
+    await evaluateToolCall("bash", { command: `mkdir -p /tmp/x${index}` }, deps());
+  }
+  assert.equal(breaker.tripped(), true, "three refusals outside a window still trip it");
+
+  breaker.shadow(60_000);
+  assert.equal(breaker.tripped(), false, "a window is for observing, not for accumulating");
+  const verdict = await evaluateToolCall("bash", { command: "mkdir -p /tmp/y" }, deps());
+  assert.equal(verdict.layer, "shadow", "judging resumes instead of the trip suppressing it");
+});
+
+test("counting resumes when the window ends, without a stale count carried in", async () => {
+  const clock = { now: 0 };
+  const { breaker, deps } = setup(clock);
+  breaker.shadow(1_000);
+
+  for (let index = 0; index < 5; index += 1) {
+    await evaluateToolCall("bash", { command: `mkdir -p /tmp/x${index}` }, deps());
+  }
+  clock.now = 2_000;
+  breaker.endShadow();
+  assert.equal(breaker.refusals, 0, "five shadowed refusals must not be waiting to trip it");
+
+  for (let index = 0; index < 3; index += 1) {
+    await evaluateToolCall("bash", { command: `mkdir -p /tmp/z${index}` }, deps());
+  }
+  assert.equal(breaker.tripped(), true, "after the window the breaker is itself again");
+});

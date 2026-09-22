@@ -156,10 +156,13 @@ What a window covers, and what it does not:
 | asks the model | no | **yes** |
 | produces a verdict | no | **yes** — readings, model and latency all recorded |
 | enforces layer 4's refusals | no | **no** |
-| enforces layer 0, your deny rules, the breaker, `unavailable` | **no** | **yes** |
+| enforces layer 0, your deny rules, `unavailable` | **no** | **yes** |
+| enforces the breaker | **no** | **no** — see below |
 | cost | nothing | the normal one judgement per call |
 
 A credential refusal is never shadowed: that is the class an instruction may not override, and a window is not an instruction. Nothing is recorded as authorisable either, because nothing was refused — a shadow refusal is a line in the log, not an entry in `/jev-permit allow`.
+
+**The breaker is suspended for the duration of a window**, and nothing is counted towards it. A window exists to keep the model being asked while its answers are watched, and a tripped breaker is the one state that stops that — so three shadowed refusals, which is precisely the kind of run a window is opened to look at, would otherwise blind it. For the same reason entering a window clears a trip that was already active, and leaves no count behind for the moment it ends: a window is for observing, not for accumulating.
 
 The window ends by itself for the same reason the pause does: something that ends by itself cannot be forgotten.
 

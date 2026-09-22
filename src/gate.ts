@@ -771,6 +771,11 @@ export class Breaker {
    * as intended, not the model being wrong, and a fast path never reaches the model at all.
    */
   recordReview(allowed: boolean, turnKey: string): void {
+    // While a window is open the refusals **are** the data. Counting them would trip the breaker on
+    // exactly the run of false refusals the window was opened to observe, and a tripped breaker stops
+    // asking the model — so the window would go blind precisely when it had something to show.
+    if (this.shadowing()) return;
+
     if (allowed) {
       this.#refusals = 0;
     } else {
@@ -785,8 +790,14 @@ export class Breaker {
     }
   }
 
+  /**
+   * Is the breaker suppressing judgements right now?
+   *
+   * False inside a shadow window, for the same reason nothing is counted there: a window exists to keep
+   * the model being asked, and a trip is the one state that stops that.
+   */
   tripped(): boolean {
-    return this.#trippedIn !== null;
+    return this.#trippedIn !== null && !this.shadowing();
   }
 
   state(): BreakerState {
@@ -836,6 +847,12 @@ export class Breaker {
    */
   shadow(durationMs: number): void {
     this.#shadowUntil = this.#now() + durationMs;
+    // A window is for observing, not for accumulating. A count carried in would trip the moment the
+    // window ends, and a trip carried in would stop the model being asked — the one thing the window
+    // exists to keep doing.
+    this.#refusals = 0;
+    this.#recent = [];
+    this.#trippedIn = null;
   }
 
   endShadow(): void {
