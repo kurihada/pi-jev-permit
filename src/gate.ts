@@ -17,7 +17,15 @@ import {
   appendLog,
   logPath,
 } from "./jev.ts";
-import { type BashPolicy, decideBash, isExemptPath, protectedPathReason, redact } from "./policy.ts";
+import {
+  type BashPolicy,
+  decideBash,
+  isExemptPath,
+  isUnbreakableReason,
+  mentionsCredentialPath,
+  protectedPathReason,
+  redact,
+} from "./policy.ts";
 
 export type GatedTool = "bash" | "write" | "edit";
 
@@ -133,6 +141,28 @@ export function latestUserMessage(
     if (text) return text;
   }
   return "";
+}
+
+/**
+ * How many user messages the branch holds — the gate's **turn key**.
+ *
+ * A user message is what starts a turn; assistant text and tool results do not. Counting only
+ * user-role entries (the same filter the intent window uses) therefore produces a value that
+ * changes exactly when the user says something, which is what lets a tripped circuit breaker
+ * expire instead of covering the rest of the session.
+ */
+export function userTurnCount(branch: readonly unknown[]): number {
+  let count = 0;
+  for (const entry of branch) {
+    if (!entry || typeof entry !== "object") continue;
+    if ((entry as { type?: unknown }).type !== "message") continue;
+
+    const message = (entry as { message?: { role?: unknown; customType?: unknown } }).message;
+    if (!message || message.role !== "user") continue;
+    if (typeof message.customType === "string" && message.customType.length > 0) continue;
+    count += 1;
+  }
+  return count;
 }
 
 // ---------------------------------------------------------------- Conditions and combination
@@ -470,8 +500,23 @@ export type BreakerState = "ok" | "degraded" | "paused";
 export interface BreakerOptions {
   readonly breakerAfter: number;
   readonly cooldownMs: number;
+  /** Consecutive refusals inside one turn that trip it. */
+  readonly refusalLimit?: number;
+  /** Refusals inside the rolling window that trip it. */
+  readonly refusalWindowLimit?: number;
+  /** How many recent reviews that window keeps. */
+  readonly refusalWindowSize?: number;
   readonly now?: () => number;
 }
+
+/**
+ * Codex's numbers, and pi-auto-review's: three refusals in a row, or ten of the last fifty reviews,
+ * ends automatic review for the turn. Taking the same values as the two implementations that have
+ * been in production is worth more than tuning our own on one person's traffic.
+ */
+export const REFUSAL_LIMIT = 3;
+export const REFUSAL_WINDOW_LIMIT = 10;
+export const REFUSAL_WINDOW_SIZE = 50;
 
 /**
  * `ok` — normal judging.
@@ -481,20 +526,72 @@ export interface BreakerOptions {
  *   which is why this exists).
  * `paused` — explicitly paused; everything passes and it auto-resumes when the timer expires
  *   (better than "turning the gate off": you can't forget to turn it back on).
+ *
+ * **Tripped** is deliberately not a fourth state: it does not describe Jev's health, it describes
+ * *this turn* — the model refused too many calls in a row, so the rest of the turn is not sent to
+ * it. It expires on its own when the user speaks again.
  */
 export class Breaker {
   #failures = 0;
   #lastFailureAt = 0;
   #lastReason = "";
   #pauseUntil = 0;
+  #refusals = 0;
+  #recent: boolean[] = [];
+  #trippedIn: string | null = null;
   readonly #options: Required<BreakerOptions>;
 
   constructor(options: BreakerOptions) {
-    this.#options = { now: () => Date.now(), ...options };
+    this.#options = {
+      refusalLimit: REFUSAL_LIMIT,
+      refusalWindowLimit: REFUSAL_WINDOW_LIMIT,
+      refusalWindowSize: REFUSAL_WINDOW_SIZE,
+      now: () => Date.now(),
+      ...options,
+    };
   }
 
   #now(): number {
     return this.#options.now();
+  }
+
+  /**
+   * Called once per judgment, before anything else is decided.
+   *
+   * A trip belongs to the turn it happened in and never outlives it: the key changes the moment
+   * the user says anything, and a boolean flag would instead have silently covered the rest of
+   * the session — a permanent hole opened by three refusals in one turn.
+   */
+  beginTurn(turnKey: string): void {
+    if (this.#trippedIn === null || this.#trippedIn === turnKey) return;
+    this.#trippedIn = null;
+    this.#refusals = 0;
+    this.#recent = [];
+  }
+
+  /**
+   * Record one **model** review outcome.
+   *
+   * Only layer ③ counts. A hard deny or one of the user's own deny rules is their policy working
+   * as intended, not the model being wrong, and a fast path never reaches the model at all.
+   */
+  recordReview(allowed: boolean, turnKey: string): void {
+    if (allowed) {
+      this.#refusals = 0;
+    } else {
+      this.#refusals += 1;
+    }
+    this.#recent.push(!allowed);
+    while (this.#recent.length > this.#options.refusalWindowSize) this.#recent.shift();
+
+    const inWindow = this.#recent.filter(Boolean).length;
+    if (this.#refusals >= this.#options.refusalLimit || inWindow >= this.#options.refusalWindowLimit) {
+      this.#trippedIn = turnKey;
+    }
+  }
+
+  tripped(): boolean {
+    return this.#trippedIn !== null;
   }
 
   state(): BreakerState {
@@ -534,6 +631,10 @@ export class Breaker {
     return this.#failures;
   }
 
+  get refusals(): number {
+    return this.#refusals;
+  }
+
   get lastReason(): string {
     return this.#lastReason;
   }
@@ -549,6 +650,7 @@ export type VerdictLayer =
   | "unavailable"
   | "degraded"
   | "paused"
+  | "breaker"
   | "grant";
 
 export interface GateVerdict {
@@ -581,6 +683,11 @@ export interface GateDeps {
   readonly exemptPaths?: readonly string[];
   /** One-shot grants from /jev-permit allow; absent means the feature is simply off. */
   readonly grants?: AllowGrants;
+  /**
+   * Which turn this call belongs to (see userTurnCount). The circuit breaker is scoped to it, and
+   * absent means "one turn for this whole run", which is what the tests want.
+   */
+  readonly turnKey?: string;
   readonly now?: () => number;
 }
 
@@ -593,9 +700,14 @@ export async function evaluateToolCall(
     return { kind: "allow", layer: "config", reason: "not a gated tool" };
   }
 
+  const turnKey = deps.turnKey ?? "";
+  deps.breaker.beginTurn(turnKey);
+
   let operation: string;
   let reasons: string[];
   let extra: { outsideWorkingDirectory?: boolean; editCount?: number } = {};
+  /** Whether the call names a credential file (see mentionsCredentialPath) — the breaker never covers those. */
+  let credentialPath = false;
 
   if (toolName === "bash") {
     const command = typeof input.command === "string" ? input.command : "";
@@ -608,6 +720,7 @@ export async function evaluateToolCall(
     }
     operation = redact(command);
     reasons = [result.decision.reason];
+    credentialPath = mentionsCredentialPath(command);
   } else {
     const target = resolveWriteTarget(input, deps.cwd);
     if (target === null) {
@@ -646,6 +759,22 @@ export async function evaluateToolCall(
       kind: "block",
       layer: "degraded",
       reason: `Jev keeps failing, now degraded: ${deps.breaker.lastReason || "unknown reason"}`,
+      policyReasons: reasons,
+    };
+  }
+
+  // Circuit breaker: the model refused this turn's last three calls (or ten of the last fifty), so
+  // a further refusal from it is noise rather than information and the turn continues unreviewed.
+  // Everything that already ran above still ran: layer 0's hard denials and the user's own deny
+  // rules are untouched, and credential / protected-path calls are excluded here on purpose —
+  // otherwise "get refused twice, then read the key" would be a working attack on the gate.
+  const unbreakable = reasons.some(isUnbreakableReason) || credentialPath;
+  if (deps.breaker.tripped() && !unbreakable) {
+    return {
+      kind: "allow",
+      layer: "breaker",
+      reason:
+        "circuit breaker tripped this turn: the model refused too many calls in a row, so this one was not sent to it",
       policyReasons: reasons,
     };
   }
@@ -692,6 +821,7 @@ export async function evaluateToolCall(
 
   deps.breaker.recordSuccess();
   const judgment = combine(result.answers, deps.thresholds);
+  deps.breaker.recordReview(judgment.allow, turnKey);
   if (judgment.allow) {
     return {
       kind: "allow",
@@ -822,6 +952,7 @@ const LAYER_LABELS: Readonly<Record<string, string>> = {
   unavailable: "Jev unavailable",
   degraded: "degraded",
   paused: "paused",
+  breaker: "circuit breaker",
 };
 
 /**
@@ -899,6 +1030,14 @@ export function statusLines(breaker: Breaker, subject?: StatusSubject): string[]
   const lines = [head, `  ${trail.join(" · ")}`];
   const reason = subject.reason?.trim() ?? "";
   if (subject.kind === "block" && reason.length > 0) lines.push(`  ${reason.slice(0, 140)}`);
+
+  // The tripped state is appended rather than swapped in: the verdict that tripped it is still
+  // worth reading, and once it is tripped the reader has to be able to see it on every later call.
+  if (breaker.tripped()) {
+    lines.push(
+      "  circuit breaker tripped: 3 refusals in a row, so this turn's remaining calls are not sent to Jev (hard denies, deny rules and credentials still are)",
+    );
+  }
   return lines;
 }
 
@@ -943,6 +1082,7 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
       breaker: wiring.breaker,
       intent: extractRecentIntent(branch),
       latestUserMessage: latestUserMessage(branch),
+      turnKey: String(userTurnCount(branch)),
       isGitRepository: wiring.isGitRepository ?? false,
       ...(wiring.exemptPaths === undefined ? {} : { exemptPaths: wiring.exemptPaths }),
       ...(wiring.grants === undefined ? {} : { grants: wiring.grants }),

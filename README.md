@@ -104,6 +104,22 @@ Invalid values are dropped with a warning rather than silently defaulted; a miss
 
 After three consecutive failures the gate degrades: the model layer blocks, but the read-only fast path and your allow rules keep working, so a broken key or a dead endpoint does not stop ordinary work. A failed judgment is **never** treated as approval.
 
+## When the model keeps refusing
+
+One yes/no probability over a long, opaque command is where this class of model is weakest. On this machine's traffic, benign 300-character shell loops landed at `p 0.45–0.59` while a genuinely off-task `pkill` landed at `0.27–0.40`, so a run of false refusals in a turn is ordinary behaviour rather than a signal that the commands were wrong.
+
+After **three refusals in a row, or ten of the last fifty reviews**, the circuit breaker trips for the rest of that turn: the remaining calls are not sent to the model at all and are allowed with layer `circuit breaker` in the widget. The numbers are Codex Auto-review's — the implementation this pattern comes from, and the one `@erichll/pi-auto-review` ports.
+
+What a tripped breaker still enforces:
+
+| still enforced | why |
+| --- | --- |
+| layer 0 hard deny | it is decided before anything reaches the model |
+| your `gate.deny` rules | your policy, not the model's judgement |
+| credentials and protected paths | otherwise "get refused twice, then read the key" would be a working attack |
+
+The trip expires with the turn, not with the session: the turn key is the number of user messages in the branch, so the moment you say anything, judging resumes. Only the **model** layer counts toward it — a hard deny or one of your deny rules is your policy working, and a fast path never asks the model at all. `/jev-permit pause` remains the other lever, and the only one that covers a credential refusal.
+
 ## Design notes
 
 The package replaces `pi-jev-auto-mode`, which judged the whole command string. Five measured problems drove the rewrite:
@@ -121,7 +137,7 @@ Four problems only showed up in live use, each caught by an end-to-end run again
 3. **`rtk` translates verbs, not just prefixes**: `tail -2 f` becomes `rtk read f`. Stripping the wrapper left an unrecognised command name, so a purely read-only chain was sent to the model. Hard deny now looks through transparent wrappers too.
 4. **`ctx.ui.setStatus` writes to the footer** and did not render at all here; `ctx.ui.setWidget` defaults to just above the editor, which is where the status belongs.
 
-The single-question form of layer 3 followed from the same measurement: the model's per-condition readings for a compound decision are not separable by threshold tuning, so one number with one knob is easier to reason about and to calibrate from the log.
+The single-question form of layer 3 followed from the same measurement: the model's per-condition readings for a compound decision are not separable by threshold tuning, so one number with one knob is easier to reason about and to calibrate from the log. It also set the ceiling — with nothing to decompose, a long command the model cannot reason through gets a hedge instead of an answer. That is what the circuit breaker above is for, and why "too many mundane calls are being reviewed" is answered by widening the local layers rather than by lowering the threshold (`p 0.45–0.50` holds both the benign and the genuinely destructive commands, so no threshold separates them).
 
 ## Development
 

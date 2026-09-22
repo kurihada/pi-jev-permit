@@ -509,6 +509,51 @@ export function isCredentialPath(path: string): boolean {
   return CREDENTIAL_PATTERNS.some((re) => re.test(unquote(path)));
 }
 
+/**
+ * The reasons the read-only layer emits when a call may put a credential into context.
+ *
+ * Exported as constants because the circuit breaker has to recognise this class *before* Jev is
+ * asked: the breaker covers ordinary work and never credentials. Matching these strings by hand
+ * in a second file is how the two copies drift apart, so they live here and are used below.
+ */
+export const CREDENTIAL_READ_REASON_PREFIX = "reads a credential file:";
+export const CREDENTIAL_UNRESOLVED_REASON =
+  "argument contains an unresolved variable, cannot confirm it does not read a credential file";
+
+export const CREDENTIAL_REASON_MARKERS: readonly string[] = [
+  CREDENTIAL_READ_REASON_PREFIX,
+  CREDENTIAL_UNRESOLVED_REASON,
+];
+
+/**
+ * True for the reasons the circuit breaker is never allowed to cover: credential access and
+ * protected paths.
+ *
+ * A tripped breaker stops sending calls to Jev. These still go to it, because "the model was
+ * wrong about the last three calls" says nothing about a secret, and a breaker that swallowed
+ * credential checks would be a way to reach a key by being denied twice first.
+ */
+export function isUnbreakableReason(reason: string): boolean {
+  if (reason.startsWith("protected") || reason.startsWith("matched a configured protectedPath")) {
+    return true;
+  }
+  return CREDENTIAL_REASON_MARKERS.some((marker) => reason.includes(marker));
+}
+
+/**
+ * Does any token of this command name a credential file, whatever the command is?
+ *
+ * The read-only layer only checks the **readers** it knows (`cat`, `grep`, ...), which is the right
+ * question for "is this safe to run without asking". The circuit breaker needs the wider one —
+ * could this touch a secret at all — because it is about to stop consulting the model for the rest
+ * of the turn, and `rm ~/.ssh/id_rsa` reaches no reader at all while being exactly that.
+ */
+export function mentionsCredentialPath(command: string): boolean {
+  return splitChain(command).some((segment) =>
+    tokenize(segment.raw).some((token) => isCredentialPath(token.text)),
+  );
+}
+
 const REDIRECT_RE = /(\d*)>>?\s*(&[0-9-]+|[^\s;&|<>]*)/g;
 
 /** A redirect that writes a file -> not read-only. Returns the reason, or null. */
@@ -566,10 +611,10 @@ export function readOnlyProblem(segment: string): string | null {
   if (cmd === "find" && args.some((a) => FIND_WRITE_FLAGS.includes(a))) return "find with a write / execute flag";
   if (CREDENTIAL_SENSITIVE.has(cmd)) {
     if (args.some((a) => a.includes("$"))) {
-      return "argument contains an unresolved variable, cannot confirm it does not read a credential file";
+      return CREDENTIAL_UNRESOLVED_REASON;
     }
     for (const a of args) {
-      if (isCredentialPath(a)) return `reads a credential file: ${a}`;
+      if (isCredentialPath(a)) return `${CREDENTIAL_READ_REASON_PREFIX} ${a}`;
     }
   }
   return null;
