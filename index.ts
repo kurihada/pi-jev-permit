@@ -13,6 +13,7 @@ import {
   type JevJson,
   type JevJsonObject,
   type UsageRecord,
+  appendLog,
   createJevClient,
   credentialPath,
   loadUsage,
@@ -255,6 +256,19 @@ export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void
       const notify = (message: string, level: "info" | "warning" | "error" = "info"): void => {
         ctx.ui?.notify?.(message, level);
       };
+      //
+      // A posture change is not a judgment, so it is not a decision record — but it belongs in the log,
+      // or a stretch with no shadow decisions cannot be told apart from a stretch with no window open.
+      // That is not hypothetical: it happened, and the ambiguity was read the wrong way once already.
+      const logWindow = (window: "shadow" | "pause", action: "open" | "close", durationMs?: number): void => {
+        appendLog(agentDir, {
+          kind: "window",
+          ts: new Date().toISOString(),
+          window,
+          action,
+          ...(durationMs === undefined ? {} : { durationMs }),
+        });
+      };
       const [sub = "", ...rest] = args.trim().split(/\s+/).filter((part) => part.length > 0);
       const config = configNow();
 
@@ -378,6 +392,7 @@ export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void
         case "pause": {
           const ms = parseDurationMs(rest[0] ?? "");
           breaker.pause(ms);
+          logWindow("pause", "open", ms);
           ctx.ui?.setStatus?.("jev-permit", `jev-permit PAUSED ${Math.ceil(ms / 60_000)}m`);
           notify(
             `Judgment paused for ${Math.ceil(ms / 60_000)} minutes: all calls pass, and it resumes automatically (better than turning the gate off, because you cannot forget to turn it back on)`,
@@ -392,6 +407,7 @@ export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void
           // denies, your deny rules, an unavailable endpoint and a credential refusal all still apply.
           const ms = parseDurationMs(rest[0] ?? "");
           breaker.shadow(ms);
+          logWindow("shadow", "open", ms);
           notify(
             `Shadowing for ${Math.ceil(ms / 60_000)} minutes: every call is still judged and recorded, but a refusal is not enforced. Hard denies, deny rules and credentials are unaffected. It ends by itself.`,
             "warning",
@@ -401,12 +417,14 @@ export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void
 
         case "enforce": {
           breaker.endShadow();
+          logWindow("shadow", "close");
           notify("Shadowing ended: the model's refusals are enforced again", "info");
           return;
         }
 
         case "resume": {
           breaker.resume();
+          logWindow("pause", "close");
           notify("Judgment resumed", "info");
           return;
         }

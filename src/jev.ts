@@ -334,8 +334,25 @@ export interface DecisionLogRecord {
   readonly transport: string;
 }
 
-/** Two record kinds in one jsonl file: the core logs each ask, the gate logs each decision */
-export type LogRecord = AskLogRecord | DecisionLogRecord;
+/**
+ * A posture change: a `pause` or a `shadow` window is not a judgement, so it is not a decision record.
+ *
+ * It has to be **in the log** anyway, because otherwise a period with no `shadow` decisions is
+ * ambiguous — it can mean "nothing was refused" or "no window was open", and separating those two
+ * readings is the entire reason a window is logged at all. That ambiguity happened: a run with the
+ * window open produced zero records and could not be told apart from a run with it closed.
+ */
+export interface WindowLogRecord {
+  readonly kind: "window";
+  readonly ts: string;
+  readonly window: "shadow" | "pause";
+  readonly action: "open" | "close";
+  /** How long the window will run. Only on `open`. */
+  readonly durationMs?: number;
+}
+
+/** Three record kinds in one jsonl file: the core logs each ask, the gate each decision, the commands each posture change */
+export type LogRecord = AskLogRecord | DecisionLogRecord | WindowLogRecord;
 
 export function logPath(agentDir: string): string {
   return join(agentDir, "pi-jev-permit-log.jsonl");
