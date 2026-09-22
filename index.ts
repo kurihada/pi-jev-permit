@@ -26,6 +26,7 @@ import {
   Breaker,
   type ExtensionApiLike,
   type GateContextLike,
+  Ledger,
   refusalOption,
   refusalOptionId,
   registerGate,
@@ -233,12 +234,17 @@ export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void
   // One store for the whole session: `/jev-permit allow` writes to it, the gate reads from it.
   const grants = new AllowGrants();
 
+  // And one history for the whole session: the repeat layer reads it, every judgement adds to it.
+  // In memory, like the grants — a restart starts the history over.
+  const ledger = new Ledger({ repeatAllowance: 2 });
+
   registerGate(pi, {
     agentDir,
     breaker,
     loadConfig: (ctx) => loadFor(ctx),
     makeClient,
     grants,
+    ledger,
     exemptPaths: exemptPaths(agentDir),
   });
 

@@ -568,6 +568,29 @@ export function writesToFile(segment: string): string | null {
   return null;
 }
 
+/** How many of a command's segments redirect into a file. */
+export function redirectCount(command: string): number {
+  return splitChain(command).filter((segment) => writesToFile(segment.raw) !== null).length;
+}
+
+const NETWORK_HEADS =
+  /\b(curl|wget|nc|ncat|netcat|ssh|scp|sftp|telnet|rclone|aws|gcloud|gsutil|kubectl|gh|heroku|vercel|fly|flyctl|ngrok|doctl)\b/;
+const NETWORK_GIT = /\bgit\s+(push|fetch|clone|pull|remote|ls-remote|submodule)\b/;
+const NETWORK_PKG =
+  /\b(npm|pnpm|yarn|bun|pip|pip3|uv|poetry|cargo|go|docker|brew)\s+(publish|install|add|ci|i|dlx|exec|download|get|mod|push|pull|login|upgrade|tap|x)\b/;
+
+/**
+ * Does this command talk to another machine?
+ *
+ * Only a hint: it is counted into the history the judgement sees ("this session reached the network
+ * twice") and it decides nothing on its own, so a miss costs a hint rather than an allowance. That is
+ * why it may be a plain regex — a file named `/tmp/aws.txt` counting as egress is harmless where it
+ * would not be if anything were gated on it.
+ */
+export function touchesNetwork(command: string): boolean {
+  return NETWORK_HEADS.test(command) || NETWORK_GIT.test(command) || NETWORK_PKG.test(command);
+}
+
 const READONLY_GIT_SUBCOMMANDS = new Set([
   "status", "diff", "log", "show", "blame", "shortlog", "describe", "rev-parse", "rev-list",
   "ls-files", "ls-tree", "cat-file", "count-objects", "verify-pack", "whatchanged", "name-rev",
