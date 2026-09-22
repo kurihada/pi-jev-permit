@@ -62,8 +62,7 @@ export type UnavailableReason =
   | "cancelled"
   | "unknown";
 
-/** `budget_exceeded` is this package's own code: an exhausted quota is not "Jev is down", so the status bar must say which one it is */
-export type AskFailureReason = UnavailableReason | "budget_exceeded";
+export type AskFailureReason = UnavailableReason;
 
 export interface AskSuccess {
   readonly ok: true;
@@ -173,8 +172,6 @@ export function describeReason(reason: AskFailureReason): string {
       return "the state to send is too large";
     case "cancelled":
       return "cancelled by the caller";
-    case "budget_exceeded":
-      return "daily quota exhausted";
     case "http":
       return "HTTP error";
     default:
@@ -409,8 +406,7 @@ export interface ClientOptions {
   readonly timeoutMs?: number;
   readonly maxRetries?: number;
   readonly maxStateCharacters?: number;
-  readonly budget?: { readonly requestsPerDay: number; readonly usdPerDay: number };
-  /** For probes / key verification: neither reads nor writes usage or logs, and does not count against the daily quota */
+  /** For probes / key verification: neither reads nor writes usage or logs */
   readonly ephemeral?: boolean;
   readonly fetch?: FetchLike;
   readonly now?: () => number;
@@ -438,7 +434,6 @@ export function createJevClient(options: ClientOptions): JevClient {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRetries = Math.max(0, options.maxRetries ?? DEFAULT_MAX_RETRIES);
   const maxStateCharacters = options.maxStateCharacters ?? DEFAULT_MAX_STATE_CHARACTERS;
-  const budget = options.budget ?? { requestsPerDay: Number.POSITIVE_INFINITY, usdPerDay: Number.POSITIVE_INFINITY };
   const now = options.now ?? (() => Date.now());
   const url = `${options.baseUrl.replace(/\/+$/, "")}${protocolPath(options.protocol)}`;
   const transport = describeTransport(options.protocol, options.baseUrl);
@@ -499,20 +494,6 @@ export function createJevClient(options: ClientOptions): JevClient {
       });
       if (payload.length > maxStateCharacters) {
         return failure("state_too_large", `${payload.length} > ${maxStateCharacters} chars`, elapsed());
-      }
-
-      // Check the quota before using it: when exceeded, neither send the request nor meter it
-      const before =
-        options.ephemeral === true ? EMPTY_USAGE(utcDate(started)) : loadUsage(options.agentDir, started);
-      if (before.requests >= budget.requestsPerDay) {
-        return failure("budget_exceeded", `daily request count ${before.requests} has reached the limit ${budget.requestsPerDay}`, elapsed());
-      }
-      if (before.usd >= budget.usdPerDay) {
-        return failure(
-          "budget_exceeded",
-          `estimated daily spend $${before.usd.toFixed(4)} has reached the limit $${budget.usdPerDay}`,
-          elapsed(),
-        );
       }
 
       for (let attempt = 0; ; attempt += 1) {
@@ -640,7 +621,7 @@ export async function verifyKey(options: {
     apiKey: options.apiKey,
     timeoutMs: options.timeoutMs ?? 10_000,
     maxRetries: 0, // key verification never retries a rejected credential
-    ephemeral: true, // a probe neither counts against the quota nor writes logs
+    ephemeral: true, // a probe neither writes usage nor logs
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
   });
 

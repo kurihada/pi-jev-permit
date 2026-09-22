@@ -71,7 +71,6 @@ async function main(): Promise<void> {
             apiKey: key.key,
             timeoutMs: provider.timeoutMs,
             maxRetries: provider.maxRetries,
-            budget: config.budget,
             fetch: async (input, init) => {
               counter.calls += 1;
               return realFetch(input, init);

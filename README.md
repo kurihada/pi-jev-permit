@@ -86,7 +86,6 @@ Global `~/.pi/agent/pi-jev-permit.json`, project `<cwd>/.pi/pi-jev-permit.json` 
 ```jsonc
 {
   "provider": { "preset": "gateway", "baseUrl": "https://your-gateway.example.com", "timeoutMs": 4000, "maxRetries": 1 },
-  "budget": { "requestsPerDay": 2000, "usdPerDay": 1.0 },
   "gate": {
     "records": "status",                 // status | full | off
     "allow": ["cd *", "git commit *"],   // matched per segment

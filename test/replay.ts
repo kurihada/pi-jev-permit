@@ -141,7 +141,6 @@ async function main(): Promise<void> {
     apiKey: key.key,
     timeoutMs: provider.timeoutMs,
     maxRetries: provider.maxRetries,
-    budget: config.budget,
   });
   const thresholds = config.thresholds;
 

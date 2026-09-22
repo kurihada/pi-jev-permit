@@ -5,10 +5,6 @@
     "timeoutMs": 4000,
     "maxRetries": 1
   },
-  "budget": {
-    "requestsPerDay": 2000,
-    "usdPerDay": 1.0
-  },
   "gate": {
     "records": "status",
     "allow": [

@@ -260,29 +260,16 @@ test("an over-large state is not sent", async () => {
   assert.equal(f.calls.length, 0);
 });
 
-test("quota: when exceeded, neither send the request nor meter it", async () => {
+test("no quota: repeated asks in one UTC day are never refused for volume, and still metered", async () => {
   const f = fakeFetch(() => json(ANSWER));
-  const client = createJevClient(options({ fetch: f.fn, budget: { requestsPerDay: 1, usdPerDay: 1 } }));
+  const client = createJevClient(options({ fetch: f.fn }));
   assert.equal((await client.ask(request())).ok, true);
-  const second = await client.ask(request());
-  assert.equal(second.ok, false);
-  if (!second.ok) assert.equal(second.reason, "budget_exceeded");
-  assert.equal(f.calls.length, 1);
-  assert.equal(client.usage().requests, 1);
+  assert.equal((await client.ask(request())).ok, true);
+  assert.equal(f.calls.length, 2);
+  assert.equal(client.usage().requests, 2);
 });
 
-test("quota: the spend cap also applies", async () => {
-  const f = fakeFetch(() => json(ANSWER));
-  const client = createJevClient(
-    options({ fetch: f.fn, budget: { requestsPerDay: 100, usdPerDay: 0.000001 } }),
-  );
-  assert.equal((await client.ask(request())).ok, true);
-  const second = await client.ask(request());
-  assert.equal(second.ok, false);
-  if (!second.ok) assert.equal(second.reason, "budget_exceeded");
-});
-
-test("ephemeral: a probe neither counts against the quota nor writes logs", async () => {
+test("ephemeral: a probe neither writes usage nor logs", async () => {
   const f = fakeFetch(() => json(ANSWER));
   const o = options({ fetch: f.fn, ephemeral: true });
   const client = createJevClient(o);

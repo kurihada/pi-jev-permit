@@ -101,15 +101,9 @@ export interface OnUnavailable {
   cooldownMs: number;
 }
 
-export interface Budget {
-  requestsPerDay: number;
-  usdPerDay: number;
-}
-
 export interface PermitConfig {
   enabled: boolean;
   provider: ProviderConfig;
-  budget: Budget;
   gate: GateConfig;
   thresholds: Thresholds;
   onUnavailable: OnUnavailable;
@@ -120,7 +114,6 @@ export interface PermitConfig {
 export const DEFAULT_CONFIG: PermitConfig = {
   enabled: true,
   provider: { preset: "typesafe", timeoutMs: 4000, maxRetries: 1 },
-  budget: { requestsPerDay: 2000, usdPerDay: 1.0 },
   gate: {
     records: "status",
     allow: [],
@@ -382,27 +375,12 @@ export function loadConfig(opts: LoadOptions): LoadResult {
 
   const defaults = DEFAULT_CONFIG;
   const gateRaw = isPlainObject(raw.gate) ? raw.gate : {};
-  const budgetRaw = isPlainObject(raw.budget) ? raw.budget : {};
   const thrRaw = isPlainObject(raw.thresholds) ? raw.thresholds : {};
   const unavRaw = isPlainObject(raw.onUnavailable) ? raw.onUnavailable : {};
 
   const config: PermitConfig = {
     enabled: coerceBool(raw.enabled, "enabled", warnings, defaults.enabled),
     provider: coerceProvider(raw.provider, "provider", warnings) ?? { ...defaults.provider },
-    budget: {
-      requestsPerDay: coerceInt(
-        budgetRaw.requestsPerDay,
-        "budget.requestsPerDay",
-        warnings,
-        defaults.budget.requestsPerDay,
-        1,
-        1_000_000,
-      ),
-      usdPerDay:
-        typeof budgetRaw.usdPerDay === "number" && budgetRaw.usdPerDay >= 0
-          ? budgetRaw.usdPerDay
-          : defaults.budget.usdPerDay,
-    },
     gate: {
       provider: coerceProvider(gateRaw.provider, "gate.provider", warnings),
       records: coerceEnum(

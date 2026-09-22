@@ -58,11 +58,11 @@ test("resolveProvider: explicit fields override the preset", () => {
 
 test("mergeObjects: objects recurse, arrays replace whole", () => {
   const merged = mergeObjects(
-    { gate: { allow: ["ls *"], records: "status" }, budget: { usdPerDay: 1 } },
+    { gate: { allow: ["ls *"], records: "status" }, thresholds: { allow: 0.7 } },
     { gate: { allow: ["cat *"] } },
   );
   assert.deepEqual(merged.gate, { allow: ["cat *"], records: "status" }, "arrays replace, not append");
-  assert.deepEqual(merged.budget, { usdPerDay: 1 });
+  assert.deepEqual(merged.thresholds, { allow: 0.7 });
 });
 
 // ---------------------------------------------------------------- loading

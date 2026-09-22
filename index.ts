@@ -228,7 +228,6 @@ export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void
       apiKey: key.key,
       timeoutMs: provider.timeoutMs,
       maxRetries: provider.maxRetries,
-      budget: config.budget,
     });
   };
 
