@@ -91,15 +91,18 @@ Global `~/.pi/agent/pi-jev-permit.json`, project `<cwd>/.pi/pi-jev-permit.json` 
     "records": "status",                 // status | full | off
     "allow": ["cd *", "git commit *"],   // matched per segment
     "deny": ["sudo *", "chmod 777 *"],
+    "extraReadOnly": ["tree *"],        // added to the built-in read-only list
     "transparentWrappers": ["rtk"],
     "protectedPaths": ["/etc/", "~/.ssh/"]
   },
-  "thresholds": { "allow": 0.6 },
+  "thresholds": { "allow": 0.6, "authorization": 0.4 },
   "onUnavailable": { "mode": "degraded", "breakerAfter": 3, "cooldownMs": 60000 }
 }
 ```
 
 Presets: `typesafe` (official `/v1/systemone`), `gateway` and `openrouter` (the decisions contract at `/api/alpha/decisions`). `gateway` ships **no endpoint** — a private gateway has no public address to put in a published package, so `baseUrl` is required next to it; `openrouter` carries its own. The two protocols differ only in URL, key verification and model id — the request and response bodies are the same JSON, so one parser serves both. `gate.provider` may override the global provider field by field, which is how the gate can bill a different account than the global default.
+
+`thresholds.authorization` is the line a **risky** call has to clear to be allowed on the strength of the user having asked for it; leave it out and it follows `allow - 0.2`. A tool nobody wrote a rule for is not configurable: it is allowed and reported once (see [What is judged](#what-is-judged)).
 
 Invalid values are dropped with a warning rather than silently defaulted; a missing field keeps its default (absent is not the same as wrong).
 

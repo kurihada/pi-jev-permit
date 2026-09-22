@@ -26,8 +26,13 @@
       "cargo build *"
     ],
     "deny": ["sudo *", "chmod 777 *", "dd if=*"],
+    "extraReadOnly": ["tree *"],
     "transparentWrappers": ["rtk"],
     "protectedPaths": ["/etc/", "~/.ssh/", "~/.aws/"]
+  },
+  "thresholds": {
+    "allow": 0.6,
+    "authorization": 0.4
   },
   "onUnavailable": {
     "mode": "degraded",
