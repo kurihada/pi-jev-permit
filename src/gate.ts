@@ -30,12 +30,48 @@ import {
   touchesNetwork,
 } from "./policy.ts";
 
-export type GatedTool = "bash" | "write" | "edit";
+/**
+ * What a tool name means to the gate. **Total on purpose.**
+ *
+ * It used to be a whitelist of three names and everything else was allowed silently — a hole rather
+ * than a policy, because pi's `tool_call` event fires for **every** tool an extension or an MCP server
+ * registers, and `bash_bg` and `monitor` both carry a shell command. (The event being generic over tool
+ * names is a property of the event, not a guess: pi-warden judged `ctx_execute`, which is no builtin of
+ * pi's.)
+ *
+ * `uncovered` is the honest case, and it has a **defined** outcome: the call is allowed and the tool's
+ * name is recorded once per session, so the set of tools nobody wrote a rule for becomes visible
+ * instead of staying invisible. Vercel's `wrapMcpTools` names the alternative — "any tool you forgot is
+ * silently allowed".
+ */
+export type ToolSurface = "command" | "write" | "read" | "uncovered";
 
-export const GATED_TOOLS: readonly GatedTool[] = ["bash", "write", "edit"];
+/** Tools whose input is a shell command: they all go through the same pipeline as `bash`. */
+const COMMAND_TOOLS: readonly string[] = ["bash", "bash_bg", "monitor"];
 
-export function isGatedTool(name: string): name is GatedTool {
-  return (GATED_TOOLS as readonly string[]).includes(name);
+/** Tools whose input names a file they write. */
+const WRITE_TOOLS: readonly string[] = ["write", "edit"];
+
+/**
+ * Tools that neither run a shell command nor write a file the policy governs.
+ *
+ * Listed rather than defaulted so that "allowed and not recorded" is a decision: the log is a decision
+ * log, and there is no decision in a read. A tool missing from this list is not judged either — it
+ * lands in `uncovered`, which is allowed and reported once.
+ */
+const READ_TOOLS: readonly string[] = [
+  "read", "read_symbol", "read_enclosing", "grep", "ffgrep", "find", "fffind", "ls",
+  "web_search", "fetch_content", "get_search_content", "source_check",
+  "memory_search", "memory_add", "memory_replace", "memory_remove", "recall",
+  "session_search", "skill_manage", "symbol_search", "module_report", "project_report",
+  "lens_diagnostics", "effective_config", "code_smell_scan", "context_timeline", "context_checkpoint",
+];
+
+export function toolSurface(name: string): ToolSurface {
+  if (COMMAND_TOOLS.includes(name)) return "command";
+  if (WRITE_TOOLS.includes(name)) return "write";
+  if (READ_TOOLS.includes(name)) return "read";
+  return "uncovered";
 }
 
 // ---------------------------------------------------------------- Intent
@@ -515,7 +551,7 @@ export function combine(answers: Record<string, number>, thresholds: Thresholds)
   const risk = probability("q_risk");
   const auth = probability("q_auth");
   const verdictOf = (value: number, line: number): ConditionVerdict =>
-    !Number.isFinite(value) ? "unclear" : value >= line ? "satisfied" : "rejected";
+    Number.isFinite(value) ? value >= line ? "satisfied" : "rejected" : "unclear";
 
   const conditions: ConditionOutcome[] = [
     { id: "q_critical", kind: "forbidden", p: critical, threshold: blockLine, verdict: verdictOf(critical, blockLine) },
@@ -566,7 +602,7 @@ export function combine(answers: Record<string, number>, thresholds: Thresholds)
 // ---------------------------------------------------------------- State construction
 
 export interface GateStateInput {
-  readonly tool: GatedTool;
+  readonly tool: string;
   readonly operation: string;
   readonly reasons: readonly string[];
   readonly userIntent: string;
@@ -983,9 +1019,13 @@ export async function evaluateToolCall(
   toolName: string,
   input: Record<string, unknown>,
   deps: GateDeps,
-): Promise<GateVerdict> {
-  if (!isGatedTool(toolName)) {
-    return { kind: "allow", layer: "config", reason: "not a gated tool" };
+) : Promise<GateVerdict> {
+  const surface = toolSurface(toolName);
+  if (surface === "read" || surface === "uncovered") {
+    // Nothing for the gate to decide: no shell command, and no file the policy governs. `uncovered` is
+    // allowed the same way and reported by the wiring (once per tool name), because the first step
+    // with a tool nobody wrote a rule for is to find out that it exists.
+    return { kind: "allow", layer: "config", reason: `${surface}: nothing for the gate to decide` };
   }
 
   const turnKey = deps.turnKey ?? "";
@@ -999,7 +1039,7 @@ export async function evaluateToolCall(
   /** What this call contributes to the history: redirections into files, and whether it leaves the machine. */
   let facts: LedgerFacts = { writes: 0, network: false };
 
-  if (toolName === "bash") {
+  if (surface === "command") {
     const command = typeof input.command === "string" ? input.command : "";
     const result = decideBash(command, deps.policy);
     if (result.decision.kind === "allow") {
@@ -1371,7 +1411,7 @@ export function statusLines(breaker: Breaker, subject?: StatusSubject): string[]
  */
 export function summariseCall(tool: string, input: Record<string, unknown>, maxChars = 200): string {
   const raw =
-    tool === "bash"
+    toolSurface(tool) === "command"
       ? typeof input.command === "string"
         ? input.command
         : ""
@@ -1384,6 +1424,10 @@ export function summariseCall(tool: string, input: Record<string, unknown>, maxC
 
 export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
   const now = wiring.now ?? (() => Date.now());
+
+  // Reported once per tool name per session: the point is to learn which tools nothing covers, and one
+  // line per name says that where one line per call would bury it.
+  const reportedUncovered = new Set<string>();
 
   pi.on("tool_call", async (event, ctx) => {
     const config = wiring.loadConfig({ cwd: ctx.cwd, trusted: ctx.isProjectTrusted?.() ?? false });
@@ -1413,11 +1457,37 @@ export function registerGate(pi: ExtensionApiLike, wiring: GateWiring): void {
       now,
     };
 
-    const verdict = await evaluateToolCall(event.toolName, event.input, deps);
+    const surface = toolSurface(event.toolName);
+    // Known readers pass without a record: this is a decision log, and there is no decision in a read.
+    if (surface === "read") return undefined;
+    if (surface === "uncovered") {
+      // Allowed too, and the tool's **name** is recorded once per session — the first step with a tool
+      // nobody wrote a rule for is to find out that it exists, which one line per call would bury.
+      if (reportedUncovered.has(event.toolName)) return undefined;
+      reportedUncovered.add(event.toolName);
+      appendLog(wiring.agentDir, {
+        kind: "decision",
+        ts: new Date(now()).toISOString(),
+        tool: event.toolName,
+        layer: "uncovered",
+        status: "allowed",
+        reason: "no rule covers this tool: allowed, and reported once so the gap is visible",
+        summary: summariseCall(event.toolName, event.input),
+        transport: "none",
+      });
+      if (config.gate.records !== "off") {
+        // Shown once and then overwritten by the next judged call: the widget is a status line, not a list.
+        const lines = [
+          `jev-permit uncovered ${event.toolName}`,
+          "  no rule covers this tool (allowed, reported once)",
+        ];
+        if (typeof ctx.ui?.setWidget === "function") ctx.ui.setWidget("jev-permit", lines);
+        else ctx.ui?.setStatus?.("jev-permit", lines.join("  "));
+      }
+      return undefined;
+    }
 
-    // Tools outside the gate's scope are neither logged nor touch the status line: this is a
-    // decision log, not a tool-call stream.
-    if (!isGatedTool(event.toolName)) return undefined;
+    const verdict = await evaluateToolCall(event.toolName, event.input, deps);
 
     // **Refresh on allow too**: otherwise "did it even look at this command" is anyone's guess
     if (config.gate.records !== "off") {

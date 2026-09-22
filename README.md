@@ -28,23 +28,44 @@ With no key the package still works: read-only commands take the local fast path
 0. hard deny      fixed list, raw argv, never reaches the model
 1. your rules     gate.allow / gate.deny, matched per shell segment
 2. read-only      every segment is known read-only -> local, zero network
-3. Jev            one question: should this call be allowed?
+3. repeat         the same command was already judged and allowed this turn
+4. Jev            three questions, and a table decides
 ```
 
-Layer 0 is not configurable and is checked on the raw text before anything else. Layers 1 and 2 cost nothing (no network). Layer 3 asks exactly one question — **should this call be allowed to run** — and the considerations it weighs are **ranked**, not merely conjoined:
+Layer 0 is not configurable and is checked on the raw text before anything else. Layers 1 to 3 cost nothing — no network, no request.
 
-1. **Authorisation.** A direct, specific instruction in `latest_user_message` is decisive: the call is allowed even when it is otherwise risky or hard to undo — a user asking for a git history rewrite is authorisation, not a reason to refuse. Without such an instruction the call must still fit the work in `user_intent`, or be a routine step of it.
-2. **Credentials.** A call that sends secrets anywhere, or reads a credential file into the conversation, is refused — and an instruction does **not** override it; only a human pausing the gate can.
-3. **Irreversibility** — data outside its target, uncommitted work, repository history — weighs rather than vetoes: it lowers the probability for a call nobody asked for, and does not block one the user explicitly asked for.
+### Layer 4 asks three questions, not one
 
-Allowed when `p >= thresholds.allow` (default `0.6`). Everything else — including "unclear" and "no answer" — is blocked: **silence is never consent.** A block is not a dead end: `/jev-permit allow` grants one retry of one refused call, and it reaches exactly as far as the model's own refusals — never a hard deny, never a deny rule, never a credential.
+Splitting them is the design. A single "should this be allowed" probability has to average *how dangerous* together with *how authorised*, and the measured result on this machine's own traffic was **100 refusals out of 125 commands** under a clearly authorising instruction — 44 of them landing between 0.40 and 0.59, which is a model saying "I cannot tell" rather than answering.
+
+| question | asks |
+| --- | --- |
+| `q_critical` | would it expose a credential, or destroy something that exists nowhere else? |
+| `q_risk` | would it cause damage that is costly to undo, move data off the machine, interrupt something that is running, or change far more than the object it names? |
+| `q_auth` | do the user's own words ask for this call, or for the work it is a step of? |
+
+The table, in `combine()`: `q_critical` at or above `thresholds.allow` blocks on its own; `q_risk` blocks only when `q_auth` is below `thresholds.authorization` (default `allow - 0.2`); everything else passes. Both hazard questions carry the calibration rules that keep ordinary work out of them — a long, unfamiliar or partially-shown command is not evidence of risk by itself, a path outside the working directory is not a reason, and a deletion counts as bounded only when its target can be **seen** to be narrow.
+
+A response missing any of the three is a block: **an unanswered question is never consent.** Credentials stay un-overridable by an instruction — only a human pausing the gate reaches that class.
+
+A block is not a dead end: `/jev-permit allow` grants one retry of one refused call, and it reaches exactly as far as the model's own refusals — never a hard deny, never a deny rule, never a credential.
 
 The newest user message travels separately as `latest_user_message`, because the intent window alone is a conversation rather than an instruction. A blocked call then gets exactly one follow-up question — unauthorised, credential risk, or irreversible risk — so the block message names the reason instead of leaving three different next moves to guess from.
 
-Three details matter more than they look:
+## What is judged
+
+| surface | tools | how |
+| --- | --- | --- |
+| command | `bash`, `bash_bg`, `monitor` | the command pipeline above |
+| write | `write`, `edit` | by the path they touch |
+| read | `read`, `grep`, `find`, … | allowed, no record — there is no decision in a read |
+| **uncovered** | anything else | allowed, and the tool's **name** is recorded once per session and shown once |
+
+That last row is the important one. Pi's `tool_call` event fires for **every** tool an extension or an MCP server registers, so "a tool I did not think of" needs an answer rather than a hole. It used to be a three-name whitelist, and `bash_bg` — which runs a shell command — ran through it unjudged *and* unrecorded. The default is `record` deliberately: the first step with an unknown tool is to find out that it exists.
 
 - **Segments, not strings.** `cd /repo && npm test` is decomposed into segments and each is matched on its own, so an allow rule can actually express it (a whole-string matcher cannot: one `;` would disable every rule). Transparent wrappers (`rtk`) are stripped and a leading `VAR=value` assignment is treated as inert, so a wrapped read-only command still takes the fast path. Hard deny, by contrast, always looks at the raw text.
 - **Redaction before anything leaves the machine.** Secrets in the command text (PEM blocks, JWTs, `sk-…`, `ghp_…`, `AKIA…`, `Bearer …`, `api_key=…`) become `<redacted>`. File contents, diffs and tool output are never sent; a write/edit contributes only its path.
+- **The history, and what a repeat is.** An *identical* command that the model already allowed in the same turn skips it (N=2), because repeating an answer is not a new question. It is the one deliberately fail-open layer, so it is narrow on purpose: identical command only, model allows only, same turn only, cleared by a refusal, and never a credential or protected path. Counts of what has already happened also travel to Jev as evidence — never as authorisation.
 
 ## The widget above the input box
 
