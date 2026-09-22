@@ -1,3 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+
+# Real command history extracted from this machine's sessions: regenerable, and not ours to
+# publish. The jq extraction is in test/replay.ts's header comment.
+test/fixtures/replay-commands.txt

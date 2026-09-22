@@ -50,16 +50,19 @@ function blockAnswers(reasonClass: string): Record<string, number> {
   };
 }
 
+/** A refusal the way the three-question table produces one: risky and not clearly asked for. */
+const refusedAnswers = { q_critical: 0.05, q_risk: 0.88, q_auth: 0.2 };
+
 /** Refuses the first question and names `reasonClass` on the follow-up (the gate asks two different sets). */
 function refusingClient(reasonClass: string): JevClient {
   return {
     transport: "test",
     usage: () => EMPTY_USAGE("2026-09-20"),
     ask: async (payload: Parameters<JevClient["ask"]>[0]): Promise<AskResult> => {
-      const primary = Object.hasOwn(payload.questions, "allow");
+      const primary = Object.hasOwn(payload.questions, "q_critical");
       return {
         ok: true,
-        answers: primary ? { allow: 0.3 } : blockAnswers(reasonClass),
+        answers: primary ? refusedAnswers : blockAnswers(reasonClass),
         model: "test",
         inputTokens: 10,
         outputTokens: 1,

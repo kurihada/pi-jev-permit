@@ -81,8 +81,18 @@ export interface GateConfig {
 }
 
 export interface Thresholds {
-  /** Allow threshold: the model's "should allow" probability must be >= this to pass, otherwise deny (including when unclear). */
+  /**
+   * Block line for the two hazard questions: at or above it the call is refused.
+   *
+   * One number for both, rather than one per question, because they are the same judgement at
+   * different severities and a single knob is what made the old design's behaviour legible.
+   */
   allow: number;
+  /**
+   * Authorization line: below it, a hazardous call has no defence and is refused, however loud the
+   * user's instruction was. Defaults to `allow - 0.2`.
+   */
+  authorization?: number;
 }
 
 export interface OnUnavailable {
@@ -414,6 +424,16 @@ export function loadConfig(opts: LoadOptions): LoadResult {
     },
     thresholds: {
       allow: coerceThreshold(thrRaw.allow, "thresholds.allow", warnings, defaults.thresholds.allow),
+      ...(thrRaw.authorization === undefined
+        ? {}
+        : {
+            authorization: coerceThreshold(
+              thrRaw.authorization,
+              "thresholds.authorization",
+              warnings,
+              defaults.thresholds.allow - 0.2,
+            ),
+          }),
     },
     onUnavailable: {
       mode: coerceEnum(

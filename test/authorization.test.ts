@@ -61,9 +61,10 @@ test("the state carries the newest message separately, and the question names th
   );
   assert.equal((blank.value as Record<string, unknown>)["latest_user_message"], "(no user request is in context)");
 
-  const question = String((gateQuestions()["allow"]!.instructions as Record<string, unknown>)["question"]);
-  assert.match(question, /latest_user_message/, "the model has to be told the field exists");
-  assert.match(question, /risky/, "and that a direct instruction settles it even for a risky action");
+  // q_auth is the question that reads the user's own words, so the field has to be named there
+  const auth = String((gateQuestions()["q_auth"]!.instructions as Record<string, unknown>)["question"]);
+  assert.match(auth, /latest_user_message/, "the model has to be told the field exists");
+  assert.match(auth, /They asked for it/, "and that a direct instruction is its own band");
 });
 
 test("pickBlockReason: the clearest reason, or nothing when none stands out", () => {
@@ -101,7 +102,7 @@ test("a blocked call asks exactly one follow-up, and the message names the reaso
       calls += 1;
       const answers: Record<string, number> =
         calls === 1
-          ? { allow: 0.35 }
+          ? { q_critical: 0.05, q_risk: 0.88, q_auth: 0.2 }
           : { because_outside_task: 0.05, because_credential_risk: 0.02, because_irreversible_risk: 0.86 };
       return { ok: true, answers, model: "test", inputTokens: 10, outputTokens: 1, usd: 0, latencyMs: 5 };
     },
@@ -109,7 +110,7 @@ test("a blocked call asks exactly one follow-up, and the message names the reaso
 
   const verdict = await evaluateToolCall("bash", { command: "git filter-branch -f --all" }, deps({ client }));
   assert.equal(verdict.kind, "block");
-  assert.match(verdict.reason, /not clearly allowed/);
+  assert.match(verdict.reason, /risky and not clearly asked for/);
   assert.match(verdict.reason, /most likely because: could destroy something hard to undo/);
   assert.match(verdict.reason, /0\.86/);
   assert.equal(calls, 2, "one judgement plus exactly one follow-up");
@@ -122,7 +123,7 @@ test("an allow pays nothing for the follow-up", async () => {
     usage: () => EMPTY_USAGE("2026-09-20"),
     ask: async (): Promise<AskResult> => {
       calls += 1;
-      return { ok: true, answers: { allow: 0.91 }, model: "test", inputTokens: 10, outputTokens: 1, usd: 0, latencyMs: 5 };
+      return { ok: true, answers: { q_critical: 0.02, q_risk: 0.2, q_auth: 0.91 }, model: "test", inputTokens: 10, outputTokens: 1, usd: 0, latencyMs: 5 };
     },
   };
   const verdict = await evaluateToolCall("bash", { command: "npm install" }, deps({ client }));

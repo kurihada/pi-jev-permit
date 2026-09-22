@@ -32,14 +32,16 @@ function sequenced(sequence: readonly boolean[], counter: Counter): JevClient {
     usage: () => EMPTY_USAGE("2026-09-21"),
     ask: async (payload): Promise<AskResult> => {
       counter.calls += 1;
-      if (!Object.hasOwn(payload.questions, "allow")) {
+      if (!Object.hasOwn(payload.questions, "q_critical")) {
         return { ok: true, answers: { because_outside_task: 0.9 }, model: "test", inputTokens: 1, outputTokens: 0, usd: 0, latencyMs: 1 };
       }
       const allowed = sequence[judgement] ?? sequence[sequence.length - 1] ?? true;
       judgement += 1;
       return {
         ok: true,
-        answers: { allow: allowed ? 0.95 : 0.2 },
+        answers: allowed
+          ? { q_critical: 0.02, q_risk: 0.2, q_auth: 0.9 }
+          : { q_critical: 0.05, q_risk: 0.88, q_auth: 0.2 },
         model: "test",
         inputTokens: 10,
         outputTokens: 1,
