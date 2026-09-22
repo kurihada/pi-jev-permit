@@ -110,6 +110,8 @@ Invalid values are dropped with a warning rather than silently defaulted; a miss
 | `/jev-permit allow [id]` | opens a picker over the calls the model refused this session (falls back to the same list as text when the TUI has no picker); with an id it authorises **one retry** of that exact call — bound to the tool and the redacted command, valid 60 seconds, spent by the retry. **The agent is then told, so it retries by itself** — that notice carries a `customType`, which keeps it out of the gate's intent window and stops it from counting as a second authorisation. It cannot cover a hard deny (never listed) or a credential refusal (marked `pause only`) |
 | `/jev-permit login [systemone\|decisions]` | verifies a key against the endpoint the gate actually uses, then stores it `0600` in that protocol's own slot |
 | `/jev-permit pause [30m]` | allows everything until the deadline, then recovers by itself |
+| `/jev-permit shadow [30m]` | judges everything, enforces the model's refusals never, and records what it would have refused — see [Shadow mode](#shadow-mode) |
+| `/jev-permit enforce` | ends a shadow window early |
 | `/jev-permit resume` | ends a pause |
 | `/jev-permit stats` | usage, plus how the judged calls actually scored |
 | `/jev-permit explain` | the last few decisions: command, layer, reason, readings |
@@ -140,6 +142,28 @@ What a tripped breaker still enforces:
 | credentials and protected paths | otherwise "get refused twice, then read the key" would be a working attack |
 
 The trip expires with the turn, not with the session: the turn key is the number of user messages in the branch, so the moment you say anything, judging resumes. Only the **model** layer counts toward it — a hard deny or one of your deny rules is your policy working, and a fast path never asks the model at all. `/jev-permit pause` remains the other lever, and the only one that covers a credential refusal.
+
+## Shadow mode
+
+`/jev-permit shadow [30m]` keeps judging **every** call and stops enforcing the model's refusals. What it is for is the answer to a question a static policy cannot answer: *what would this refuse on real traffic right now?* — collected while nothing is interrupted, and on the real sequences rather than on a sampled command list.
+
+Vercel ships the same idea in `@ai-sdk/policy-opa`, with the reason stated plainly: **"Do not ship a new policy straight to enforce. The first version almost always denies things you did not mean to."** Their rollout is write the rules, run them shadowed, look at only the `denied` events, fix, then enforce.
+
+What a window covers, and what it does not:
+
+| | pause | shadow |
+| --- | --- | --- |
+| asks the model | no | **yes** |
+| produces a verdict | no | **yes** — readings, model and latency all recorded |
+| enforces layer 4's refusals | no | **no** |
+| enforces layer 0, your deny rules, the breaker, `unavailable` | **no** | **yes** |
+| cost | nothing | the normal one judgement per call |
+
+A credential refusal is never shadowed: that is the class an instruction may not override, and a window is not an instruction. Nothing is recorded as authorisable either, because nothing was refused — a shadow refusal is a line in the log, not an entry in `/jev-permit allow`.
+
+The window ends by itself for the same reason the pause does: something that ends by itself cannot be forgotten.
+
+One limit worth stating: shadow is **one-sided**. It shows false refusals, which is what makes ordinary work stop. It cannot show a call that should have been blocked and was not, because it never blocks — that question is what `test/replay.ts` is for.
 
 ## Design notes
 

@@ -249,7 +249,8 @@ export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void
   });
 
   pi.registerCommand(COMMAND_NAME, {
-    description: "Manage pi-jev-permit: login / allow / pause / resume / stats / explain / reload",
+    description:
+      "Manage pi-jev-permit: login / allow / pause / shadow / enforce / resume / stats / explain / reload",
     handler: async (args, ctx) => {
       const notify = (message: string, level: "info" | "warning" | "error" = "info"): void => {
         ctx.ui?.notify?.(message, level);
@@ -382,6 +383,25 @@ export default function piJevPermit(pi: ExtensionApiLike & CommandApiLike): void
             `Judgment paused for ${Math.ceil(ms / 60_000)} minutes: all calls pass, and it resumes automatically (better than turning the gate off, because you cannot forget to turn it back on)`,
             "warning",
           );
+          return;
+        }
+
+        case "shadow": {
+          // Judge everything, enforce the model's refusals never — so the window collects what it would
+          // have refused on real traffic while no work is interrupted. Narrower than `pause`: hard
+          // denies, your deny rules, an unavailable endpoint and a credential refusal all still apply.
+          const ms = parseDurationMs(rest[0] ?? "");
+          breaker.shadow(ms);
+          notify(
+            `Shadowing for ${Math.ceil(ms / 60_000)} minutes: every call is still judged and recorded, but a refusal is not enforced. Hard denies, deny rules and credentials are unaffected. It ends by itself.`,
+            "warning",
+          );
+          return;
+        }
+
+        case "enforce": {
+          breaker.endShadow();
+          notify("Shadowing ended: the model's refusals are enforced again", "info");
           return;
         }
 

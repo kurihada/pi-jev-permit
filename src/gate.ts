@@ -730,6 +730,7 @@ export class Breaker {
   #lastFailureAt = 0;
   #lastReason = "";
   #pauseUntil = 0;
+  #shadowUntil = 0;
   #refusals = 0;
   #recent: boolean[] = [];
   #trippedIn: string | null = null;
@@ -819,6 +820,34 @@ export class Breaker {
 
   pauseRemainingMs(): number {
     return Math.max(0, this.#pauseUntil - this.#now());
+  }
+
+  /**
+   * Shadow: judge everything, enforce the model layer's refusals never.
+   *
+   * Deliberately **not** a fourth `BreakerState`. A state describes the gate's health and replaces the
+   * verdict; this is a window over one layer and the verdict is still produced in full — which is the
+   * whole point, because a paused gate throws away exactly the information this exists to collect.
+   *
+   * Narrower than `pause` on purpose: layer 0, the deny rules, the breaker, the repeat layer and an
+   * unavailable endpoint all still do what they always did, and a credential refusal is never shadowed.
+   *
+   * Time-bounded for the same reason `pause` is: a window that ends by itself cannot be forgotten.
+   */
+  shadow(durationMs: number): void {
+    this.#shadowUntil = this.#now() + durationMs;
+  }
+
+  endShadow(): void {
+    this.#shadowUntil = 0;
+  }
+
+  shadowing(): boolean {
+    return this.#shadowUntil > this.#now();
+  }
+
+  shadowRemainingMs(): number {
+    return Math.max(0, this.#shadowUntil - this.#now());
   }
 
   get failures(): number {
@@ -973,6 +1002,7 @@ export type VerdictLayer =
   | "paused"
   | "breaker"
   | "repeat"
+  | "shadow"
   | "grant";
 
 export interface GateVerdict {
@@ -1198,6 +1228,25 @@ export async function evaluateToolCall(
   // The three possible reasons call for three different next moves (ask the user, drop the
   // credential, pick a reversible approach), and the reader should not have to guess which.
   const explained = await describeBlockedCall(deps.client, state, deps.thresholds.allow, judgment.reason);
+
+  // Shadow: the refusal is produced, recorded and shown, and **not enforced**. Everything above ran as
+  // it always does — layer 0, the deny rules, the unavailable and degraded states, the breaker — so a
+  // window can only ever make the model's own refusals pass. A credential refusal is exempt from the
+  // window: that is the class an instruction may not override, and a window is not allowed to either.
+  // No grant is recorded, because nothing was refused for `/jev-permit allow` to point at.
+  if (deps.breaker.shadowing() && explained.reasonClass !== CREDENTIAL_BLOCK_CLASS) {
+    return {
+      kind: "allow",
+      layer: "shadow",
+      reason: `would have blocked: ${explained.text}`,
+      policyReasons: reasons,
+      model: result.model,
+      judgment,
+      latencyMs: result.latencyMs,
+      reasonClass: explained.reasonClass,
+    };
+  }
+
   deps.grants?.record(toolName, operation, explained.text, explained.reasonClass);
   return {
     kind: "block",
