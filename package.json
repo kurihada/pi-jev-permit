@@ -1,6 +1,6 @@
 {
   "name": "pi-jev-permit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A Jev (TypeSafe System One) permission gate for the Pi coding agent: it judges every bash / write / edit call before it runs, behind a config allow/deny floor and a local read-only fast path.",
   "license": "MIT",
   "type": "module",
