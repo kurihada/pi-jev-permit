@@ -447,6 +447,81 @@ export function hardDenyReason(segments: readonly Segment[], wrappers: readonly 
 }
 
 /**
+ * Replace a variable with the plain literal this same command assigned to it, when it did so earlier.
+ *
+ * Layer 0 refuses a recursive delete whose target it cannot resolve, which is right — but it could not
+ * see through an assignment in the same command: `T=/tmp/pi-mt-inspect; rm -rf $T; mkdir -p $T` was
+ * hard-denied (measured, and layer 0 accepts no grant, so there was no way through). Substituting the
+ * value makes that a deletion of a named directory, which is what it is.
+ *
+ * Three deliberate limits, all of them about not inventing information:
+ *
+ * - **Earlier only.** The map is built as the command is walked, so `rm -rf $T; T=/tmp/x` keeps its
+ *   hard deny: at the moment that delete runs, `$T` is empty.
+ * - **Plain literals only**, by the same predicate that decides an assignment is inert (`$`, backtick,
+ *   parens, `;`, `|`, `&`, `<`, `>`, `\` all disqualify). `T=$(rm -rf /)` and `T='a; rm -rf /'` stay
+ *   opaque and stay hard-denied.
+ * - **Not inside single quotes**, where a `$` is literal text rather than an expansion.
+ */
+export function resolveLiteralAssignments(command: string): string {
+  const values = new Map<string, string>();
+  const segments: string[] = [];
+  let changed = false;
+
+  for (const segment of splitChain(command)) {
+    const substituted = substituteKnownValues(segment.raw, values);
+    if (substituted !== segment.raw) changed = true;
+    segments.push(substituted);
+
+    const assignment = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(substituted.trim());
+    const name = assignment?.[1];
+    const value = assignment?.[2];
+    if (name !== undefined && value !== undefined && isSafeAssignmentValue(value)) {
+      values.set(name, unquote(value));
+    }
+  }
+
+  // The separators are not worth preserving: everything that reads this re-splits it, and the only
+  // other consumer is a reason string.
+  return changed ? segments.join("; ") : command;
+}
+
+/** One pass over a segment, quote-aware: `$T` expands, `'$T'` does not. */
+function substituteKnownValues(text: string, values: ReadonlyMap<string, string>): string {
+  if (values.size === 0) return text;
+  let out = "";
+  let quote: "'" | '"' | null = null;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index] ?? "";
+    if (quote === '"' && char === "\\") {
+      out += char + (text[index + 1] ?? "");
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      if (quote === null) quote = char;
+      else if (quote === char) quote = null;
+      out += char;
+      continue;
+    }
+    if (quote !== "'" && char === "$") {
+      const rest = text.slice(index);
+      const match = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}/.exec(rest) ?? /^\$([A-Za-z_][A-Za-z0-9_]*)/.exec(rest);
+      const name = match?.[1];
+      const value = name === undefined ? undefined : values.get(name);
+      if (match && name !== undefined && value !== undefined) {
+        out += value;
+        index += match[0].length - 1;
+        continue;
+      }
+    }
+    out += char;
+  }
+  return out;
+}
+
+/**
  * Whole-command hard deny. A fork bomb is shredded by splitting (`:` `|` `&` `;` are all
  * separators), so this one must look at the raw text before splitting.
  */
@@ -651,8 +726,16 @@ export function decideBash(command: string, policy: BashPolicy): BashResult {
     return { decision: { kind: "allow", layer: "config", reason: "empty command" }, segments };
   }
 
-  // 0. Hard deny (on each segment's raw text)
-  const denied = hardDenyCommand(command, segments, policy.transparentWrappers);
+  // 0. Hard deny (on each segment's raw text), with the assignments this same command makes resolved
+  // first: `T=/tmp/pi-mt-inspect; rm -rf $T` deletes a named directory, and layer 0 refused it only
+  // because it could not see what `$T` held — measured, and layer 0 accepts no grant, so there was no
+  // way through it. Everything below still runs on the original text.
+  const resolved = resolveLiteralAssignments(command);
+  const denied = hardDenyCommand(
+    resolved,
+    resolved === command ? segments : splitChain(resolved),
+    policy.transparentWrappers,
+  );
   if (denied) return { decision: { kind: "deny", layer: "harddeny", reason: denied }, segments };
 
   // Normalize
